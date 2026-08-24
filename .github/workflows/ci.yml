@@ -40,11 +40,17 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
+          # qt6-base/qt6-svg are needed by third-party/tray. We install them rather
+          # than building with -DSUNSHINE_ENABLE_TRAY=OFF: the tray is shipped code
+          # and not compiling it would be a second coverage hole alongside CUDA.
+          # (This build passed locally only because the maintainer runs KDE, where
+          # Qt is present anyway -- a clean container is what exposed it.)
           pacman -Syu --noconfirm --needed \
             git cmake ninja pkgconf \
             boost ffmpeg openssl opus \
             libva libdrm libcap libevdev libpulse numactl miniupnpc curl avahi \
             wayland wayland-protocols libx11 libxcb libxfixes libxrandr libxtst \
+            qt6-base qt6-svg \
             nodejs npm python
 
       - name: Checkout
