@@ -6,6 +6,7 @@
 #include "../../tests_common.h"
 
 // standard includes
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -15,8 +16,11 @@
 namespace {
 
   using meow::display_union::compute_union;
+  using meow::display_union::decide_union_capture;
   using meow::display_union::is_union_output_name;
+  using meow::display_union::min_stream_region_version;
   using meow::display_union::output_geometry_t;
+  using meow::display_union::union_status_t;
 
   /**
    * @brief Build an output whose logical size equals its mode size (scale 1).
@@ -233,4 +237,87 @@ TEST(DisplayUnionTest, OutputsWithoutAnyGeometryAreIgnored) {
   EXPECT_EQ(region.contributing_outputs, 1u);
   EXPECT_EQ(region.width, 1920);
   EXPECT_EQ(region.height, 1200);
+}
+
+TEST(DisplayUnionTest, MirroredPairBesideAGapIsNotFullyCovered) {
+  // Regression: an area-based heuristic reports this as covered because the mirrored pair
+  // double-counts, exactly cancelling the 100x100 hole between the pair and the third output.
+  const auto region = compute_union({
+    unscaled("DP-1", 0, 0, 100, 100),
+    unscaled("DP-2", 0, 0, 100, 100),
+    unscaled("DP-3", 200, 0, 100, 100),
+  });
+  EXPECT_TRUE(region.valid);
+  EXPECT_EQ(region.width, 300);
+  EXPECT_EQ(region.height, 100);
+  EXPECT_FALSE(region.covers_whole_region);
+}
+
+TEST(DisplayUnionTest, PartiallyOverlappingOutputsStillTileTheBox) {
+  const auto region = compute_union({
+    unscaled("DP-1", 0, 0, 1920, 1080),
+    unscaled("DP-2", 960, 0, 1920, 1080),
+  });
+  EXPECT_TRUE(region.valid);
+  EXPECT_EQ(region.width, 2880);
+  EXPECT_TRUE(region.covers_whole_region);
+}
+
+TEST(DisplayUnionTest, NegativeOriginIsFlagged) {
+  const auto with_negative = compute_union({
+    unscaled("DP-1", -1920, 0, 1920, 1080),
+    unscaled("DP-2", 0, 0, 1920, 1080),
+  });
+  EXPECT_TRUE(with_negative.valid);
+  EXPECT_TRUE(with_negative.has_negative_origin);
+
+  const auto anchored = compute_union({unscaled("DP-1", 0, 0, 1920, 1080)});
+  EXPECT_FALSE(anchored.has_negative_origin);
+}
+
+TEST(DisplayUnionDecisionTest, UsesRegionOnASupportedCompositor) {
+  const auto decision = decide_union_capture(
+    {
+      unscaled("eDP-2", 0, 0, 1920, 1200, 180000),
+      unscaled("HDMI-A-1", 1920, 0, 3440, 1440, 100000),
+    },
+    6
+  );
+  EXPECT_EQ(decision.status, union_status_t::ok);
+  EXPECT_TRUE(decision.use_region());
+  EXPECT_EQ(decision.region.width, 5360);
+  EXPECT_EQ(decision.region.height, 1440);
+}
+
+TEST(DisplayUnionDecisionTest, RefusesBelowTheMinimumProtocolVersion) {
+  const std::vector<output_geometry_t> outputs {unscaled("eDP-2", 0, 0, 1920, 1200)};
+  for (std::uint32_t version = 0; version < min_stream_region_version; ++version) {
+    const auto decision = decide_union_capture(outputs, version);
+    EXPECT_EQ(decision.status, union_status_t::unsupported_protocol) << "version " << version;
+    EXPECT_FALSE(decision.use_region()) << "version " << version;
+  }
+  EXPECT_TRUE(decide_union_capture(outputs, min_stream_region_version).use_region());
+}
+
+TEST(DisplayUnionDecisionTest, RefusesWhenNoOutputIsUsable) {
+  auto disabled = unscaled("eDP-2", 0, 0, 1920, 1200);
+  disabled.enabled = false;
+  const auto decision = decide_union_capture({disabled}, 6);
+  EXPECT_EQ(decision.status, union_status_t::no_usable_outputs);
+  EXPECT_FALSE(decision.use_region());
+}
+
+TEST(DisplayUnionDecisionTest, RefusesAnOversizedRegionInsteadOfClampingIt) {
+  const auto decision = decide_union_capture(
+    {
+      unscaled("DP-1", 0, 0, 7680, 4320),
+      unscaled("DP-2", 7680, 0, 3840, 2160),
+    },
+    6
+  );
+  EXPECT_EQ(decision.status, union_status_t::exceeds_capture_limits);
+  EXPECT_FALSE(decision.use_region());
+  // The geometry is reported untouched so the caller can log what was refused.
+  EXPECT_EQ(decision.region.pixel_width, 11520);
+  EXPECT_EQ(decision.region.pixel_height, 4320);
 }

@@ -961,7 +961,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
             different GPUs. Notes: areas of the bounding box that no output covers are rendered
             black; the captured scale is the highest scale in use by any output; and the region is
             fixed for the lifetime of a capture session, so connecting or disconnecting a monitor
-            only takes effect once the stream is restarted.
+            only takes effect once the stream is restarted. Two monitors side by side produce a very
+            wide frame (5360x1440 is 3.7:1), so request a correspondingly wide resolution on the
+            client or expect the picture to be letterboxed into a thin strip.
             <br>
             <br>
             **macOS:**
