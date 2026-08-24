@@ -955,6 +955,15 @@ editing the `conf` file in a text editor. Use the examples as reference.
             For wlgrab/x11grab and kmsgrab the numeric id value can also be used.
             <br>
             <br>
+            For the `kwin` capture backend the reserved value `all` streams every enabled output
+            at once, as a single frame the size of the bounding box of the whole logical desktop.
+            KWin composites the region itself, so this works even when the outputs are driven by
+            different GPUs. Notes: areas of the bounding box that no output covers are rendered
+            black; the captured scale is the highest scale in use by any output; and the region is
+            fixed for the lifetime of a capture session, so connecting or disconnecting a monitor
+            only takes effect once the stream is restarted.
+            <br>
+            <br>
             **macOS:**
             <br>
             During Sunshine startup, you should see the list of detected displays:
