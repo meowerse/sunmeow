@@ -51,12 +51,19 @@ jobs:
             libva libdrm libcap libevdev libpulse numactl miniupnpc curl avahi \
             wayland wayland-protocols libx11 libxcb libxfixes libxrandr libxtst \
             qt6-base qt6-svg \
-            nodejs npm python
+            nodejs npm python python-jinja
 
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0  # version detection reads tags
+
+      # The container runs as a different uid than the checkout owner, so git
+      # refuses to touch the tree ("detected dubious ownership") and tag lookup
+      # fails with error 128, breaking version detection.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory '*'
 
       # Sunshine pins `find_package(Boost CONFIG 1.89.0 EXACT)`. Arch ships a
       # newer Boost, so CMake falls back to FetchContent and *builds Boost from
