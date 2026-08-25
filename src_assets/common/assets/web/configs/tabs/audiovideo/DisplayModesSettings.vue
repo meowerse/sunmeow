@@ -18,6 +18,20 @@ const config = ref(props.config)
     <div class="form-text">{{ $t("config.max_bitrate_desc") }}</div>
   </div>
 
+  <!--adaptive_bitrate_min-->
+  <div class="mb-3">
+    <label for="adaptive_bitrate_min" class="form-label">{{ $t("config.adaptive_bitrate_min") }}</label>
+    <input type="number" min="0" class="form-control" id="adaptive_bitrate_min" placeholder="0" v-model="config.adaptive_bitrate_min" />
+    <div class="form-text">{{ $t("config.adaptive_bitrate_min_desc") }}</div>
+  </div>
+
+  <!--adaptive_bitrate_max-->
+  <div class="mb-3">
+    <label for="adaptive_bitrate_max" class="form-label">{{ $t("config.adaptive_bitrate_max") }}</label>
+    <input type="number" min="0" class="form-control" id="adaptive_bitrate_max" placeholder="0" v-model="config.adaptive_bitrate_max" />
+    <div class="form-text">{{ $t("config.adaptive_bitrate_max_desc") }}</div>
+  </div>
+
   <!--minimum_fps_target-->
   <div class="mb-3">
     <label for="minimum_fps_target" class="form-label">{{ $t("config.minimum_fps_target") }}</label>
