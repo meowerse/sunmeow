@@ -111,8 +111,8 @@ jobs:
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
 
-      # `submodules: recursive` pulled 48 submodules totalling 1.6 GB. The measured
-      # breakdown (see the checkout-cost report below) is dominated by one subtree:
+      # `submodules: recursive` pulled 48 submodules totalling 1.6 GB, dominated by
+      # build-deps' own FFmpeg source tree:
       #
       #     1.4G  third-party/build-deps
       #     1.2G  third-party/build-deps/third-party/FFmpeg/AMF
@@ -120,17 +120,23 @@ jobs:
       #      40M  third-party/build-deps/third-party/FFmpeg/Vulkan-Headers
       #      38M  third-party/build-deps/third-party/FFmpeg/SVT-AV1
       #
-      # That is FFmpeg *source*, plus AMD's AMF SDK. This job never compiles FFmpeg:
-      # cmake/dependencies/common.cmake reads the *prebuilt* binaries from
-      # `build-deps/dist/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}`. So build-deps
-      # is initialised non-recursively -- its own submodules are build inputs for
-      # producing those binaries upstream, not for consuming them here.
+      # Of build-deps' eight nested submodules, this build references exactly two:
       #
-      # Everything else keeps --recursive, because nested submodules there are real
-      # dependencies (tray and libvirtualhid each vendor lizardbyte-common).
+      #     cmake/compile_definitions/common.cmake:217  FFmpeg/nv-codec-headers/include
+      #     cmake/compile_definitions/linux.cmake:131   FFmpeg/Vulkan-Headers/include
       #
-      # --jobs parallelises the clones, which is the other half of the cost: 48 separate
-      # fetches were being done one at a time.
+      # AMF, x264, x265_git, FFmpeg, SVT-AV1 and Vulkan-Loader are never referenced by
+      # cmake/, CMakeLists.txt or src/. They are inputs for *producing* FFmpeg binaries
+      # upstream; this job only needs headers. So build-deps is initialised
+      # non-recursively and then those two are added explicitly.
+      #
+      # (A first attempt skipped build-deps' submodules entirely, on the assumption that
+      # the prebuilt `dist/` tree was used. That is true of the pin on `master`, but the
+      # pin on this branch has no `dist/` at all -- it is a source repo. The `test -d`
+      # guard below is what caught it, at checkout rather than at link time. It stays.)
+      #
+      # --jobs parallelises the clones: 48 serial fetches were the other half of the
+      # cost, since 400 MB is only a few seconds of runner bandwidth.
       - name: Initialise submodules
         run: |
           set -e
@@ -139,14 +145,14 @@ jobs:
           # shellcheck disable=SC2086
           git submodule update --init --recursive --jobs "$(nproc)" -- $others
           git submodule update --init --jobs "$(nproc)" -- third-party/build-deps
+          git -C third-party/build-deps submodule update --init --jobs "$(nproc)" -- \
+              third-party/FFmpeg/nv-codec-headers third-party/FFmpeg/Vulkan-Headers
           echo "initialised $(git submodule status --recursive | wc -l) submodules"
-          test -d third-party/build-deps/dist || { echo "::error::build-deps/dist missing"; exit 1; }
+          for d in third-party/build-deps/third-party/FFmpeg/nv-codec-headers/include \
+                   third-party/build-deps/third-party/FFmpeg/Vulkan-Headers/include; do
+            test -d "$d" || { echo "::error::missing required header dir: $d"; exit 1; }
+          done
 
-      # Checkout is now the largest single step (161s of a 237s run once ccache
-      # is warm). Before optimising it further, measure where that time goes:
-      # 400 MB over a runner's network is a few seconds, so this is git overhead
-      # (16 separate submodule clones), not bandwidth. This step is cheap and
-      # tells the next change what to actually cut.
       - name: Report checkout cost
         run: |
           echo "## Checkout cost" >> "$GITHUB_STEP_SUMMARY"
