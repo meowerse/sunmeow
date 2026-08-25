@@ -371,6 +371,13 @@ namespace meow::viewport {
    *  - the caller's encode surface disagrees with the recorded one, which means the state
    *    describes some other scaler and is not trustworthy.
    *
+   * **The two consumers read `std::nullopt` differently, deliberately.** The software path
+   * (`apply_plan()`) leaves the scaler exactly as it is. The CUDA path
+   * (`cuda_t::meow_viewport_apply()` via `cuda_scaler_config()`) reverts to its uncropped
+   * baseline instead, because a GPU scaler is reconfigured by assignment rather than by an
+   * expensive reinit, so "revert" is as cheap as "leave alone" and a displaced scaler showing
+   * the full desktop beats one frozen on a crop nobody is steering any more.
+   *
    * When the caller *is* the owner and no rectangle is pending, the returned plan is the
    * full-frame plan built from the recorded geometry -- identical to what `init()`
    * configured -- so `configure_scaler()` finds nothing to change in the steady state and

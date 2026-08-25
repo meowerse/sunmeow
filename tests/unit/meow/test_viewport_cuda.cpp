@@ -5,7 +5,7 @@
  * Everything here is a pure function over integers and floats, so the whole CUDA crop
  * geometry is covered without a GPU, a driver or a captured frame (CLAUDE.md §5.5). What a
  * GPU is still needed for -- that the kernel really reads the rectangle these numbers
- * describe -- is covered by `tools/meow/viewport_cuda_probe.cu`, which runs the real
+ * describe -- is covered by `tools/meow/viewport_cuda_probe.cpp`, which runs the real
  * `cuda::sws_t` against a synthetic image on real hardware.
  */
 // test includes
@@ -365,18 +365,37 @@ namespace {
   }
 
   TEST(MeowViewportCuda, ShrinkingFrameTightensTheCropRatherThanReadingPastIt) {
-    // `cuda_t::convert()` passes `min(allocated, in hand)` for exactly this case: the encoder
-    // was set up for a 5360x1440 capture but the frame that arrived is smaller.
+    // `cuda_t::meow_viewport_apply()` passes `min(allocated, in hand)` for exactly this case:
+    // the encoder was set up for a 5360x1440 capture but the frame that arrived is smaller.
+    // Written without an `if` on the outcome on purpose -- a test that asserts one thing when
+    // the crop survives and another when it does not cannot fail, and this repository has
+    // already deleted one guard for that reason (`7e4e43f9`).
     const auto base = upstream_baseline(capture_w, capture_h, surface_w, surface_h);
     const auto cropped = plan(capture_w, capture_h, surface_w, surface_h, rect_t {4000, 1000, 1000, 400});
     ASSERT_TRUE(cropped.cropped);
+    ASSERT_EQ(cropped.source, (rect_t {4000, 1000, 1000, 400}));
 
+    // Against the frame it was planned for, the crop reads all 1000x400 of what it asked for.
+    const auto full = cuda_scaler_config(cropped, base, capture_w, capture_h, surface_w, surface_h);
+    ASSERT_TRUE(full.cropped);
+    EXPECT_FLOAT_EQ(full.source.stepX, 1000.0f / static_cast<float>(cropped.out_width));
+    EXPECT_FLOAT_EQ(full.source.stepY, 400.0f / static_cast<float>(cropped.out_height));
+
+    // Against a 4200x1100 frame only 200x100 of it exists, and the steps shrink to match
+    // rather than the sampling running off the end of what was uploaded.
     const auto config = cuda_scaler_config(cropped, base, 4200, 1100, surface_w, surface_h);
-    if (config.cropped) {
-      expect_in_bounds(config, 4200, 1100, surface_w, surface_h);
-    } else {
-      EXPECT_EQ(config, base);
-    }
+    ASSERT_TRUE(config.cropped);
+    EXPECT_FLOAT_EQ(config.source.originX, 4000.0f);
+    EXPECT_FLOAT_EQ(config.source.originY, 1000.0f);
+    EXPECT_FLOAT_EQ(config.source.stepX, 200.0f / static_cast<float>(cropped.out_width));
+    EXPECT_FLOAT_EQ(config.source.stepY, 100.0f / static_cast<float>(cropped.out_height));
+    EXPECT_LT(config.source.stepX, full.source.stepX);
+    EXPECT_LT(config.source.stepY, full.source.stepY);
+    expect_in_bounds(config, 4200, 1100, surface_w, surface_h);
+
+    // The destination is untouched -- a short frame changes what is read, never what is
+    // written, so the encode surface stays exactly as full it was.
+    EXPECT_EQ(config.dest, full.dest);
   }
 
   TEST(MeowViewportCuda, ApplyReportsOnlyDestinationChanges) {

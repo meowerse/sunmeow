@@ -353,10 +353,11 @@ int main() {
   check(crop_all.width() < marker_size && crop_all.height() < marker_size, "cropped: the out-of-crop marker is NOT in the encoded frame");
 
   // And the point of the whole feature: the same desktop pixels now occupy far more of the
-  // encode surface.
+  // encode surface. Reported as a linear ratio (the marker's width); the area ratio is its
+  // square, so 2.77x wider is 7.7x the encoded pixels for the same bitrate.
   const double magnification = crop_all.width() / static_cast<double>(base_marker_px);
-  std::printf("  marker occupies %d px cropped vs %d px uncropped (%.2fx)\n", crop_all.width(), base_marker_px, magnification);
-  check(magnification > 2.0, "cropped: the marker occupies at least 2x more encoded pixels");
+  std::printf("  marker is %d px wide cropped vs %d px uncropped (%.2fx linear, %.1fx area)\n", crop_all.width(), base_marker_px, magnification, magnification * magnification);
+  check(magnification > 2.0, "cropped: the marker is at least 2x wider than in the uncropped frame");
 
   // ---- 3. reverting, and the blanking that makes reverting safe --------------------------
   // Reverting shrinks the destination from the whole surface back to the 1280x343 letterbox.

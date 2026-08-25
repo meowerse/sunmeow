@@ -141,8 +141,9 @@ the rectangle; a zero extent is an invalid launch configuration, not a small pic
 checked on real hardware by `tools/meow/viewport_cuda_probe.cpp`, which paints two markers on
 a synthetic 5360x1440 desktop, crops to one of them, and asserts that the marker lands where
 the plan says (within a pixel), that the other marker is **not** in the encoded frame at all,
-that it occupies 2.77x more encoded pixels than uncropped, and that reverting without the
-blanking pass leaves 16093 stale pixels in the padding while reverting with it leaves zero.
+that it is 2.77x wider than in the uncropped frame (7.7x the encoded pixels for the same
+bitrate), and that reverting without the blanking pass leaves 16093 stale pixels in the
+padding while reverting with it leaves zero.
 That tool is not part of any build target — `tools/` is Windows-only in CMake — and is run by
 hand; the command line is in its header.
 
@@ -355,10 +356,9 @@ launch is identical, only its parameters differ. Nothing is allocated on either.
 A **zoom** (crop size changed) does allocate, once, on the software path: swscale's filter
 tables are rebuilt and the intermediate output frame is reallocated at the new size. On the
 CUDA path a zoom allocates nothing at all — it costs one extra full-surface kernel launch to
-re-blacken the encode surface, bounded at the client's 20 Hz update rate. The client rate limits viewport
-updates to one per 50 ms, so this is bounded at 20 Hz in the worst case and is zero while the
-user is reading. The encoder is never reinitialised and the encode surface never changes
-size.
+re-blacken the encode surface. The client rate limits viewport updates to one per 50 ms, so
+either cost is bounded at 20 Hz in the worst case and is zero while the user is reading. The
+encoder is never reinitialised and the encode surface never changes size.
 
 What a zoom deliberately does **not** do is reallocate the encode surface. Upstream's
 `prefill()` is the obvious way to re-blacken the padding, and it is the wrong one:

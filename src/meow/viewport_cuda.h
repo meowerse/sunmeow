@@ -51,10 +51,16 @@
  * `cudaAddressModeClamp` renders as a smear of the last column rather than a fault. Both are
  * asserted in `StepIsPerAxisBecauseTheScaledExtentsRoundIndependently`.
  *
- * Per-axis steps also make the CUDA path agree with the software one by construction:
- * swscale is configured with an input of `source.width x source.height` and an output of
- * `out_width x out_height`, which *is* a per-axis ratio. One scale factor here would mean
- * the two paths sampled measurably different rectangles from the same plan.
+ * Per-axis steps also make the CUDA path sample the same *rectangle* as the software one by
+ * construction: swscale is configured with an input of `source.width x source.height` and an
+ * output of `out_width x out_height`, which *is* a per-axis ratio. One scale factor here
+ * would mean the two paths read measurably different rectangles from the same plan.
+ *
+ * Sampling the same rectangle is not the same as producing identical pixels, and this header
+ * does not claim it is. Upstream's kernel fetches at `x` rather than `x - 0.5`, so CUDA's
+ * linear filtering carries a half-texel bias that swscale does not, and the two resamplers
+ * are different filters besides. The rectangle is the contract; the pixels inside it are each
+ * backend's own business, exactly as they were before this change.
  *
  * ## Bounds safety
  *

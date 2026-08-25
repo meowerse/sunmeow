@@ -148,6 +148,11 @@ namespace cuda {
 
     viewport_t viewport;
 
+    // MEOW-TOUCH(viewport-cuda): `scale` is read only by this class's own constructor, which
+    // uses it to seed `source` below; the conversion kernels consume `source`. An upstream
+    // change to how `scale` is *computed* still takes effect through that seed, but an
+    // upstream change that writes `scale` anywhere else will compile cleanly and do nothing.
+    // Check this on every upstream sync -- it is recorded in docs/meow/TOUCHPOINTS.md.
     float scale;
 
     /**

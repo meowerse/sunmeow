@@ -250,20 +250,38 @@ namespace cuda {
      *     session, display mode or encoder reinit.
      *
      * Gated on the configuration so a host that never opted in allocates nothing, publishes
-     * nothing and answers nothing -- the feature is inert rather than merely quiet.
+     * nothing and answers nothing -- the feature is inert rather than merely quiet. (The
+     * software path in `src/video.cpp` publishes unconditionally and relies on the gate inside
+     * `on_request()` instead; both are correct, this one is quieter.)
+     *
+     * Every path that does *not* arm cropping calls `reset()` on the way out, and that is
+     * load-bearing rather than tidy. The viewport state is process-wide: without it, a scaler
+     * that failed to arm would leave a *previous* session's `geometry` and `accepting` in
+     * place, and the control thread would answer the client's next viewport packet against
+     * that stale geometry. The client resets its local zoom to 1:1 on the strength of an echo
+     * -- so it would then be shown the full desktop at 1:1 with no way to tell. Answering
+     * nothing is strictly better than answering wrongly.
      */
     void meow_viewport_init() {
       meow_viewport_ready = false;
       if (!meow::viewport::following_enabled()) {
+        meow::viewport::reset();
         return;
       }
 
       meow_viewport_baseline = meow::viewport::cuda_baseline({sws.viewport.width, sws.viewport.height, sws.viewport.offsetX, sws.viewport.offsetY}, sws.scale);
       meow_viewport_base_linear = linear_interpolation;
 
+      // `tex_t::make`'s second parameter is named `pitch` and every upstream call passes
+      // bytes (`width * 4`), but `cudaMallocArray` takes a width in *elements* -- so those
+      // calls over-allocate 4x and leave the tail texels uninitialised. Two elements is
+      // exactly the 8 bytes per row `load_ram` writes below, which matters here and not
+      // upstream: `cudaAddressModeClamp` means the blanking pass samples the far corner of
+      // this array for most of the surface, so every texel in it has to be one we wrote.
       auto blank = tex_t::make(2, 2);
       if (!blank) {
         BOOST_LOG(warning) << "meow viewport: couldn't allocate the blanking texture; the CUDA scaler will not crop"sv;
+        meow::viewport::reset();
         return;
       }
 
@@ -276,6 +294,7 @@ namespace cuda {
       black_img.row_pitch = 2 * 4;
       if (sws.load_ram(black_img, blank->array)) {
         BOOST_LOG(warning) << "meow viewport: couldn't fill the blanking texture; the CUDA scaler will not crop"sv;
+        meow::viewport::reset();
         return;
       }
 
@@ -309,6 +328,13 @@ namespace cuda {
       }
 
       const auto planned = meow::viewport::plan_for_frame(this, img.width, img.height, frame->width, frame->height);
+      // `plan_for_frame()` documents `std::nullopt` as "do not touch this scaler", and the
+      // software path honours that literally. This path deliberately reads it as "revert to
+      // the uncropped baseline" instead, because `cuda_scaler_config()` maps it there. The
+      // only way to get it is to have been displaced as owner by a newer session
+      // (`channels > 1`, off by default), and a displaced scaler showing the full desktop is
+      // a better outcome than one frozen on a crop the client has stopped steering.
+      //
       // Clamp against the smaller of the texture we allocated and the frame in hand, so the
       // kernel cannot sample rows or columns that were never uploaded.
       const auto config = meow::viewport::cuda_scaler_config(planned, meow_viewport_baseline, std::min(width, img.width), std::min(height, img.height), frame->width, frame->height);
@@ -355,6 +381,11 @@ namespace cuda {
         return;
       }
 
+      // MEOW-TOUCH(viewport-cuda): these overloads read the member `sws.source`, which a crop
+      // overwrites. Two independent facts keep that harmless: `tex` here is a zero-filled
+      // array under `cudaAddressModeClamp`, so every sample is black whatever the source map
+      // says; and `video.cpp` calls this exactly once, straight after `set_frame()`, where
+      // `source` is still the baseline. Both are load-bearing -- do not move this call.
       if (is_yuv444) {
         sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex->texture.linear, stream.get(), {frame->width, frame->height, 0, 0});
       } else {
