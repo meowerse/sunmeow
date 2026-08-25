@@ -28,14 +28,25 @@ Add to `sunshine.conf`:
 meow_viewport_following = enabled
 ```
 
-The key is read once at first use. It accepts the same values as every other Sunshine
-boolean (`enabled`/`on`/`true`/`yes`/`1`, and the corresponding negatives).
+or tick **Follow the client's viewport** in the Web UI, under Audio/Video.
 
-Sunshine will log `Warning: Unrecognized configurable option [meow_viewport_following]` at
-startup. **That is expected and harmless** — it means Sunshine's own parser did not claim the
-key, which is exactly the point; ours reads it independently from the same file. The line
-that tells you whether it actually took effect is logged when a stream's control channel
-starts:
+It is registered in `src/config.cpp` exactly like every other Sunshine setting, so it accepts
+the same values (`enabled`/`on`/`true`/`yes`/`1`, and the corresponding negatives) and
+appears in the UI alongside the display options it belongs with.
+
+> **History, because the first attempt was wrong and the reason is worth keeping.** This key
+> was originally parsed out of the configuration file by `src/meow/` alone, to avoid editing
+> an upstream file at all — the same trade `meow::display_union` made for `output_name = all`.
+> It looked clean and it was a bad call: Sunshine's own parser never learned the key existed,
+> so it logged `Warning: Unrecognized configurable option [meow_viewport_following]` at every
+> startup. A user who had just enabled the feature was being told, in a warning, that the
+> setting does not exist. CLAUDE.md §2's hierarchy exists to keep merges cheap, not to make
+> the product worse; adding one row to the settings table is the smallest possible upstream
+> edit and it has an established pattern. Registering it properly is also the only way it can
+> reach the Web UI.
+
+The line that tells you whether it actually took effect is logged when a stream's control
+channel starts:
 
 ```
 Info: meow viewport following: enabled. The client may request a crop of the desktop; ...
@@ -44,13 +55,6 @@ Info: meow viewport following: enabled. The client may request a crop of the des
 When it is off, **no handler is registered at all** — the feature is inert rather than
 merely quiet, and a viewport packet from a client that speaks the extension falls through to
 `control_server_t::call()`'s unknown-type path exactly as it would against stock Sunshine.
-
-It is deliberately **not** registered in `src/config.cpp`, so it does not appear in the Web
-UI. Registering it there would drag `config.h`, `configuration.md`, `config.html` and
-`en.json` along with it — `tests/integration/test_config_consistency.cpp` enforces exactly
-that — for a setting that needs no UI. This is the same trade `meow::display_union` made for
-`output_name = all`. Unknown keys are ignored by `config::parse_config()`, so an unpatched
-Sunshine reading the same file is unaffected.
 
 ## Why it defaults to off
 

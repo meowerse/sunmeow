@@ -167,15 +167,11 @@ namespace meow::viewport {
   /**
    * @brief Configuration key that enables viewport following.
    *
-   * Parsed out of Sunshine's own configuration file by `viewport_runtime.h` rather than
-   * registered through `config.cpp`. Adding a key to `config.cpp` drags
-   * `config.h`, `configuration.md`, `config.html` and `en.json` along with it —
-   * `tests/integration/test_config_consistency.cpp` enforces that — for a setting that
-   * needs no UI. This is the same trade `meow::display_union` made for `output_name`.
+   * Registered in `config.cpp` like every other Sunshine setting, and surfaced in the web
+   * UI. Kept here as a constant so the log line that tells a user how to turn the feature on
+   * cannot drift from the key they actually have to type.
    *
-   * The `meow_` prefix guarantees it can never collide with an upstream key, and unknown
-   * keys are ignored by `config::parse_config()`, so an unpatched Sunshine reading this
-   * file is unaffected.
+   * The `meow_` prefix guarantees it can never collide with an upstream key.
    */
   inline constexpr std::string_view following_config_key = "meow_viewport_following";
 
@@ -744,31 +740,6 @@ namespace meow::viewport {
       );
     }
     return std::string("meow viewport following: disabled. Set '").append(following_config_key).append(" = enabled' in sunshine.conf to allow the client to crop the streamed desktop.");
-  }
-
-  /**
-   * @brief Interpret the value of `meow_viewport_following` from a config file.
-   *
-   * Mirrors `config::to_bool()` in accepting `true`/`yes`/`enable`/`enabled`/`on` and any
-   * non-zero integer, so the key behaves like every other boolean in the same file.
-   *
-   * @param value Raw value text.
-   * @return The parsed setting.
-   */
-  [[nodiscard]] inline bool parse_following_value(std::string_view value) {
-    std::string lowered;
-    lowered.reserve(value.size());
-    for (const auto ch : value) {
-      lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
-    }
-
-    if (lowered == "true" || lowered == "yes" || lowered == "enable" || lowered == "enabled" || lowered == "on") {
-      return true;
-    }
-    if (lowered == "false" || lowered == "no" || lowered == "disable" || lowered == "disabled" || lowered == "off") {
-      return false;
-    }
-    return std::atoi(lowered.c_str()) != 0;
   }
 
 }  // namespace meow::viewport

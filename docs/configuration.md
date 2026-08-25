@@ -1078,6 +1078,35 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### meow_viewport_following
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Crop the captured desktop to the region the client is currently displaying, before scaling it into the
+            encoder. On a wide multi-monitor desktop streamed to a phone, the whole desktop is letterboxed into the
+            encode surface and text is destroyed before the encoder sees it; cropping to the region the user has
+            zoomed into spends the same bitrate on far fewer pixels.
+            @note{The client must support the viewport control message. A client that never sends one streams the
+            full desktop exactly as before.}
+            @warning{While a crop is active, absolute pointer and touch coordinates are not remapped and will land in
+            the wrong place. Only the software scaling path applies the crop today; VA-API and CUDA are unaffected.
+            See the sunmeow documentation for details.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}disabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            meow_viewport_following = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### dd_configuration_option
 
 <table>

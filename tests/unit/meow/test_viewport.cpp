@@ -33,6 +33,7 @@ extern "C" {
 }
 
 // local includes
+#include <src/config.h>
 #include <src/meow/viewport.h>
 #include <src/meow/viewport_runtime.h>
 #include <src/platform/common.h>
@@ -49,7 +50,6 @@ namespace {
   using meow::viewport::min_source_extent;
   using meow::viewport::offset_source_planes;
   using meow::viewport::packet_type_collision;
-  using meow::viewport::parse_following_value;
   using meow::viewport::parse_payload;
   using meow::viewport::payload_length;
   using meow::viewport::payload_version;
@@ -1913,15 +1913,44 @@ TEST(MeowViewportRegistration, RefusesToStealAnUpstreamPacketNumber) {
 // ---------------------------------------------------------------------------------
 
 /**
- * @brief The config value parses like every other boolean in the same file.
+ * @brief The key is registered with Sunshine's own parser, not read out of band.
+ *
+ * An earlier revision parsed the config file itself to avoid an upstream edit, and Sunshine
+ * then logged `Unrecognized configurable option [meow_viewport_following]` at every startup
+ * — telling a user who had just enabled the feature that the setting does not exist. This
+ * pins the registration by driving the real parser.
  */
-TEST(MeowViewportConfig, ParsesLikeSunshineBooleans) {
-  for (const auto *v : {"enabled", "enable", "on", "true", "yes", "1", "42", "ENABLED", "True"}) {
-    EXPECT_TRUE(parse_following_value(v)) << v;
+TEST(MeowViewportConfig, KeyIsRegisteredWithSunshinesOwnParser) {
+  const auto saved = config::video.viewport_following;
+
+  // The key must reach `config::video` through Sunshine's own parser, not a private read.
+  config::video.viewport_following = false;
+  config::apply_config_for_test("meow_viewport_following = enabled\n");
+  EXPECT_TRUE(config::video.viewport_following);
+  EXPECT_TRUE(meow::viewport::following_enabled());
+
+  config::apply_config_for_test("meow_viewport_following = disabled\n");
+  EXPECT_FALSE(config::video.viewport_following);
+  EXPECT_FALSE(meow::viewport::following_enabled());
+
+  // It also accepts the other spellings every Sunshine boolean accepts.
+  for (const auto *value : {"on", "true", "yes", "1"}) {
+    config::video.viewport_following = false;
+    config::apply_config_for_test(std::string("meow_viewport_following = ") + value + "\n");
+    EXPECT_TRUE(meow::viewport::following_enabled()) << value;
   }
-  for (const auto *v : {"disabled", "disable", "off", "false", "no", "0", "", "nonsense"}) {
-    EXPECT_FALSE(parse_following_value(v)) << v;
+  for (const auto *value : {"off", "false", "no", "0"}) {
+    config::video.viewport_following = true;
+    config::apply_config_for_test(std::string("meow_viewport_following = ") + value + "\n");
+    EXPECT_FALSE(meow::viewport::following_enabled()) << value;
   }
+
+  // A config that never mentions it leaves it alone -- the compatibility floor.
+  config::video.viewport_following = false;
+  config::apply_config_for_test("min_threads = 2\n");
+  EXPECT_FALSE(meow::viewport::following_enabled());
+
+  config::video.viewport_following = saved;
 }
 
 /**

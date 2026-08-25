@@ -58,7 +58,6 @@ extern "C" {
 
 // local includes
 #include "src/config.h"
-#include "src/file_handler.h"
 #include "src/meow/viewport.h"
 
 namespace meow::viewport {
@@ -157,6 +156,16 @@ namespace meow::viewport {
   /**
    * @brief Whether viewport following is enabled in the host configuration.
    *
+   * Reads `config::video.viewport_following`, which `config.cpp` fills from the
+   * `meow_viewport_following` key like every other Sunshine setting.
+   *
+   * An earlier revision parsed the key out of the configuration file here instead, to avoid
+   * an upstream edit. That was the wrong trade: Sunshine's own parser never learned the key
+   * existed, so it logged `Unrecognized configurable option [meow_viewport_following]` at
+   * every startup — telling a user who had just enabled the feature that the setting does
+   * not exist. Registering it properly also lets it appear in the web UI, which an
+   * out-of-band read never can.
+   *
    * **Defaults to off.** Three reasons, in descending order of importance:
    *
    *  1. Client-supplied absolute pointer and touch coordinates are still mapped through
@@ -171,29 +180,10 @@ namespace meow::viewport {
    *     `configure_scaler()`), so defaulting it on would advertise a feature that silently
    *     does nothing on the VA-API and CUDA paths.
    *
-   * Read once, on first use. The config file is not reloaded while streaming, and neither
-   * is anything else in `config::`.
-   *
    * @return `true` when `meow_viewport_following` is enabled.
    */
   [[nodiscard]] inline bool following_enabled() {
-    static const bool enabled = [] {
-      const auto &path = config::sunshine.config_file;
-      if (path.empty()) {
-        return false;
-      }
-      const auto contents = file_handler::read_file(path.c_str());
-      if (contents.empty()) {
-        return false;
-      }
-      const auto vars = config::parse_config(contents);
-      const auto it = vars.find(std::string {following_config_key});
-      if (it == std::end(vars)) {
-        return false;
-      }
-      return parse_following_value(it->second);
-    }();
-    return enabled;
+    return config::video.viewport_following;
   }
 
   /**
