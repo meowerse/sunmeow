@@ -136,7 +136,7 @@ namespace meow::display_union {
    * This is deliberately a *record of events received*, not a merged view: `wl_output` and
    * `xdg_output` are separate protocols that report overlapping facts, and the whole point of
    * keeping them apart is that single-output capture must go on using exactly the values it
-   * used before `xdg_output` was bound at all. @see describe_output, single_output_pos_x.
+   * used before `xdg_output` was bound at all. @see describe_output.
    */
   struct output_report_t {
     std::string name;  ///< Connector name from `wl_output::name`.
@@ -156,31 +156,32 @@ namespace meow::display_union {
   };
 
   /**
-   * @brief Position a **single-output** capture reports for an output.
+   * @brief Where a **single-output** capture gets its position, and why no test guards it.
    *
-   * Always `wl_output::geometry`, never `xdg_output`, even when both are present. These
-   * values become `display_t::offset_x`/`offset_y`, which `pipewire_display_t` matches for
-   * *equality* against `wl::monitors()` — a different source disagreeing by even one pixel
-   * makes that match fail, silently losing the display's logical size and mismapping
-   * absolute pointer input on a scaled desktop. Binding `xdg_output` for the union must not
-   * be observable here, so the two sources are never mixed.
+   * Single-output capture reads `wl_output::geometry` and never `xdg_output`, even now that
+   * both are bound. Those values become `display_t::offset_x`/`offset_y`, which
+   * `pipewire_display_t` matches for *equality* against `wl::monitors()` — a second source
+   * disagreeing by even one pixel makes that match fail, silently losing the display's
+   * logical size and mismapping absolute pointer input on a scaled desktop. Binding
+   * `xdg_output` for the union must therefore not be observable on that path, which is why
+   * `on_xdg_output_logical_position` writes only `xdg_logical_x`/`xdg_logical_y` and never
+   * back over `pos_x`/`pos_y`.
    *
-   * @param report Raw compositor report.
-   * @return X offset for single-output capture.
+   * @warning **That invariant is structural, not unit tested, and cannot be.** It lives in a
+   * `wl_output` listener inside `kwingrab.cpp` with no test seam, so nothing here can
+   * exercise it. An earlier revision shipped `single_output_pos_x()`/`single_output_pos_y()`
+   * plus two "characterization" tests that asserted `single_output_pos_x(r) == r.wl_x`
+   * against a function whose body was `return report.wl_x;` and which production never
+   * called. Re-introducing `entry->second->pos_x = x;` in the xdg listener would have left
+   * every one of those tests green. They have been removed rather than left standing,
+   * because a guard that cannot fail is worse than an acknowledged gap: it is counted as
+   * coverage. The real check is a diff of the single-output path against the pre-feature
+   * commit `a2b5da60`, which is byte-equivalent.
+   *
+   * `describe_output()` below is the union's conversion and *is* on the production path, so
+   * its tests do bite.
    */
-  [[nodiscard]] inline std::int32_t single_output_pos_x(const output_report_t &report) {
-    return report.wl_x;
-  }
 
-  /**
-   * @brief Y position a single-output capture reports for an output.
-   * @param report Raw compositor report.
-   * @return Y offset for single-output capture.
-   * @see single_output_pos_x
-   */
-  [[nodiscard]] inline std::int32_t single_output_pos_y(const output_report_t &report) {
-    return report.wl_y;
-  }
 
   /**
    * @brief Fold a raw compositor report into the geometry the union math consumes.

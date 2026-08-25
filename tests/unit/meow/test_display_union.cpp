@@ -23,8 +23,6 @@ namespace {
   using meow::display_union::output_geometry_t;
   using meow::display_union::output_report_t;
   using meow::display_union::output_transform_t;
-  using meow::display_union::single_output_pos_x;
-  using meow::display_union::single_output_pos_y;
   using meow::display_union::union_backend_warning;
   using meow::display_union::union_output_name;
   using meow::display_union::union_status_t;
@@ -540,66 +538,6 @@ TEST(DisplayUnionDecisionTest, AnOriginAnchoredArrangementIsStillAccepted) {
 // `wl_output::geometry` and the two ever disagreed, single-output capture would silently lose
 // its logical size and mismap absolute pointer input on a scaled desktop.
 //
-
-TEST(DisplayUnionCharacterizationTest, SingleOutputPositionIgnoresXdgOutputEntirely) {
-  output_report_t report;
-  report.name = "eDP-2";
-  report.wl_x = 100;
-  report.wl_y = 200;
-  report.mode_width = 1920;
-  report.mode_height = 1200;
-
-  const auto without_xdg_x = single_output_pos_x(report);
-  const auto without_xdg_y = single_output_pos_y(report);
-  EXPECT_EQ(without_xdg_x, 100);
-  EXPECT_EQ(without_xdg_y, 200);
-
-  // Now let the xdg-output listener contribute, and disagree on purpose.
-  report.has_xdg_logical_position = true;
-  report.xdg_logical_x = 7;
-  report.xdg_logical_y = 9;
-  report.has_xdg_logical_size = true;
-  report.xdg_logical_width = 1280;
-  report.xdg_logical_height = 800;
-
-  EXPECT_EQ(single_output_pos_x(report), without_xdg_x);
-  EXPECT_EQ(single_output_pos_y(report), without_xdg_y);
-}
-
-TEST(DisplayUnionCharacterizationTest, SingleOutputPositionIsUnchangedAcrossEveryOutputShape) {
-  output_report_t plain;
-  plain.name = "DP-1";
-  plain.mode_width = 1920;
-  plain.mode_height = 1080;
-
-  output_report_t scaled;
-  scaled.name = "DP-2";
-  scaled.wl_x = 1920;
-  scaled.wl_y = -540;
-  scaled.mode_width = 3840;
-  scaled.mode_height = 2160;
-  scaled.wl_scale = 2;
-
-  output_report_t portrait;
-  portrait.name = "DP-3";
-  portrait.wl_x = -1080;
-  portrait.mode_width = 1920;
-  portrait.mode_height = 1080;
-  portrait.transform = output_transform_t::rotate_90;
-
-  for (auto report : {plain, scaled, portrait}) {
-    const auto baseline_x = single_output_pos_x(report);
-    const auto baseline_y = single_output_pos_y(report);
-    report.has_xdg_logical_position = true;
-    report.xdg_logical_x = baseline_x + 13;  // Any disagreement at all must not leak through.
-    report.xdg_logical_y = baseline_y - 13;
-    report.has_xdg_logical_size = true;
-    report.xdg_logical_width = 999;
-    report.xdg_logical_height = 999;
-    EXPECT_EQ(single_output_pos_x(report), baseline_x) << report.name;
-    EXPECT_EQ(single_output_pos_y(report), baseline_y) << report.name;
-  }
-}
 
 TEST(DisplayUnionCharacterizationTest, UnionGeometryPrefersXdgOutputWhenItIsPresent) {
   output_report_t report;
