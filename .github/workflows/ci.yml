@@ -28,6 +28,28 @@ concurrency:
 permissions:
   contents: read
 
+# ccache tuning. The cache was already being restored (confirmed in the run logs),
+# but nothing measured or improved its hit rate, and the build is ~66% of CI
+# wall-clock. These are the settings that matter for a containerised CI build:
+#
+#   depend_mode      skips the preprocessor on a hit; faster, and it stops
+#                    unrelated header edits from invalidating every object.
+#   compilercheck    hash the compiler's contents, not its mtime -- a pacman -Syu
+#                    that reinstalls an identical gcc would otherwise miss the
+#                    entire cache.
+#   basedir/nohashdir  make the cache independent of the absolute build path, so
+#                    a checkout at a different path still hits.
+#   sloppiness       __DATE__/__TIME__ and header mtimes are not meaningful here
+#                    and otherwise force misses on every run.
+#   maxsize          GitHub caps total cache at 10 GB per repo; 2 G leaves room
+#                    for the 259 MB _deps cache and its history.
+env:
+  CCACHE_DEPEND: "1"
+  CCACHE_COMPILERCHECK: content
+  CCACHE_NOHASHDIR: "true"
+  CCACHE_SLOPPINESS: time_macros,include_file_mtime,include_file_ctime,pch_defines,locale
+  CCACHE_MAXSIZE: 2G
+
 jobs:
   build-test:
     name: Build & test (Arch)
@@ -59,15 +81,31 @@ jobs:
             qt6-base qt6-svg libpipewire \
             nodejs npm python python-jinja
 
+      # `fetch-depth: 0` used to be set here, with the comment "version detection
+      # reads tags". That was wrong, and it was expensive: this repository's history
+      # is ~5.1 GB, and a full clone was measured at 284-332s per run -- about a
+      # third of total CI wall-clock.
+      #
+      # `cmake/prep/build_version.cmake` never calls `git describe`. It runs exactly
+      # three git commands: `rev-parse --abbrev-ref HEAD`, `rev-parse --short HEAD`,
+      # and `diff -b --quiet`. All three work on a depth-1 clone. CI derived
+      # `PROJECT_VERSION: 0.0.0` with the full history anyway, so nothing regressed
+      # by dropping it -- there was no tag lookup to break.
+      #
+      # `filter: blob:none` makes this a partial clone: trees are fetched, file
+      # blobs only on demand. It matters most for the submodules, of which
+      # `third-party/build-deps` alone is 362 MB (nine platforms' prebuilt FFmpeg;
+      # this job reads only `dist/Linux-x86_64`).
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0  # version detection reads tags
+          filter: blob:none
 
       # The container runs as a different uid than the checkout owner, so git
-      # refuses to touch the tree ("detected dubious ownership") and tag lookup
-      # fails with error 128, breaking version detection.
+      # refuses to touch the tree ("detected dubious ownership") and the
+      # `rev-parse` calls in cmake/prep/build_version.cmake fail with error 128,
+      # breaking version detection.
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
 
@@ -110,7 +148,15 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build --parallel "$(nproc)"
+        env:
+          CCACHE_BASEDIR: ${{ github.workspace }}
+        run: |
+          ccache --zero-stats
+          cmake --build build --parallel "$(nproc)"
+          # Printed so the next person tuning CI can see the hit rate instead of
+          # guessing. The cache restores (verified in the logs) but its
+          # effectiveness across header changes was never measured.
+          ccache --show-stats
 
       # These suites need real hardware or session services (a sound card, a
       # /dev/uinput-backed virtual HID, a working encoder). On a runner they do not
