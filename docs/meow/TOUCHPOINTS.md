@@ -13,7 +13,7 @@ additive-only prime directive — before adding a row.
 
 Verified 2026-08-25 against `origin-upstream/master` (Sunshine `790d70f0`).
 
-Two upstream **C++ sources** are now modified, both by `unified-desktop-capture`. An earlier
+Four upstream **C++ sources** are now modified: two by `unified-desktop-capture` and two by `viewport`. An earlier
 revision of this file said *"Zero `MEOW-TOUCH` markers exist in `src/`"* and described that as
 the state to keep. The first half stopped being true the moment whole-desktop capture landed;
 the second half is still the goal. `git grep -n 'MEOW-TOUCH' -- src/` is the authority — if
@@ -23,6 +23,8 @@ this table disagrees with it, this table is wrong.
 | --- | --- | --- | --- |
 | `src/platform/linux/kwingrab.cpp` | `MEOW-TOUCH(unified-desktop-capture)` | The `wl_display`, the registry and the `zkde_screencast_unstable_v1` proxy are all private members of `kwin::screencast_t`, which is defined inside the `.cpp`, is not virtual and is not exported — so it cannot be subclassed or wrapped from `src/meow/` (layers 1–3 all fail). What remains upstream: the `zxdg_output_manager_v1`/`xdg_output` bindings, extra fields on `output_parameter_t`, the `stream_region` call, `static_assert`s pinning `meow::display_union::output_transform_t` to `enum wl_output_transform`, and the log statements that report the decision. The `xdg_output` logical position is stored in its own fields and never written back over `pos_x`/`pos_y`, so binding the protocol is unobservable to single-output capture. **All geometry and all policy** — the bounding box, the scale choice, the coverage test, the protocol-version gate and the oversize refusal — live in `src/meow/display_union.h` and are unit tested there. `kwin_t::verify_and_update_display_parameters()` is a layer-2 override of an existing `virtual`, not new upstream logic. | 2026-08-24 |
 | `src/platform/linux/misc.cpp` | `MEOW-TOUCH(unified-desktop-capture)` | Two hooks: an include, and three lines after capture-source selection that log a warning when `output_name` requests whole-desktop capture on a backend that cannot provide it. Layer 1 fails because the fact being reported — which capture source won — exists only in this function's `sources` bitset, which is file-static and not exported. Layer 2 has nothing to subclass (`init()` is a free function). The decision itself is layer 1: `meow::display_union::union_backend_warning()` returns the message as a string and is unit tested; the upstream lines only choose whether to log it. | 2026-08-25 |
+| `src/stream.cpp` | `MEOW-TOUCH(viewport)` | Four hooks, `0` deletions: an include, a `control_viewport_t` packed struct, `send_viewport()`, one registration call and one `reset()` call. Layer 1 fails because everything the echo needs — `control_header_v2`, the `#pragma pack(1)` region, `encode_control()`, `session_t`, `control_server_t` — is defined inside this `.cpp` and is not exported, so the payload cannot be framed or encrypted from `src/meow/`. Layer 2 has nothing to subclass (`controlBroadcastThread` is a free function and `send_hdr_mode()` is its sibling). What is *not* here: the packet number, the payload layout, the parsing, the validation, the reference-frame coordinate transform (the wire is in negotiated-stream-resolution pixels, not desktop pixels) and every geometry decision all live in `src/meow/viewport.h` and are unit tested. Upstream's `packetTypes` array is **not modified** — the handler is registered by value via `meow::viewport::map_request_handler()`, which is handed the array only so it can refuse to register on a collision. | 2026-08-25 |
+| `src/video.cpp` | `MEOW-TOUCH(viewport)` | Three hooks plus an include, `0` deletions, all inside `avcodec_software_encode_device_t`: re-plan at the top of `convert()`, shift the plane pointers to the crop origin before `sws_scale_frame()`, and publish the scaler geometry in `init()`. Layers 1–3 all fail for the same reason — `sws_input_frame`, `sws_output_frame`, `offsetW`, `offsetH`, `prefill()` and `reinit_sws()` are private members of a class declared in `src/video.h` and constructed by `make_avcodec_encode_session()`, so they can only be reached from inside a member function. The hooks contain no geometry: `meow::viewport::plan_for_frame()` decides, `configure_scaler()` writes the six fields, and `offset_source_planes()` does the pointer arithmetic, all unit tested against real `AVFrame`s and a real pixel buffer in `tests/unit/meow/test_viewport.cpp`. | 2026-08-25 |
 | `docs/configuration.md` | (no marker — prose only) | Documents the reserved `output_name = all` value next to the existing `output_name` description. A separate page would leave the setting undocumented where users actually look. | 2026-08-24 |
 
 Every deletion count against these files is still `0` — the edits are additive, and the
@@ -38,8 +40,8 @@ therefore declared here rather than described as "additive":
 | `AGENTS.md` | _(none — Markdown, not source)_ | It is the entry point agents read by convention; the name is fixed by that convention, so a new file cannot replace it. Upstream's content is preserved verbatim and our fork rules are **appended** below a marker comment. | 2026-08-24 |
 | `.gitignore` | _(none — not source)_ | Ignore rules only take effect in the real `.gitignore`. One line added (`.claude/worktrees/`) to keep agent worktrees out of the index. | 2026-08-24 |
 
-Everything else we have added is a genuinely new file: `CLAUDE.md`, `README.meow.md`, and this
-file.
+Everything else we have added is a genuinely new file: `CLAUDE.md`, `README.meow.md`, this
+file, `docs/meow/viewport-following.md`, `src/meow/*.h` and `tests/unit/meow/*.cpp`.
 
 > **History note.** An earlier revision of the base replaced `AGENTS.md` wholesale — 36 lines
 > of upstream guidance deleted for a one-line pointer — and this registry then described the
@@ -67,8 +69,8 @@ git diff --numstat origin-upstream/master -- .
 ```
 
 Run both **before every upstream sync** ([`CLAUDE.md` §4](../../CLAUDE.md)). The first grep
-now returns the `unified-desktop-capture` markers; reconcile them against the table above
-row by row. Any marker the table does not list is the bug.
+now returns the `unified-desktop-capture` and `viewport` markers; reconcile them against the
+table above row by row. Any marker the table does not list is the bug.
 
 What matters in (2) is that **every deletion count is `0`** — we only ever add lines to
 upstream files. The insertion counts change with every edit to our own docs, so do not treat
@@ -79,6 +81,8 @@ them as fixed; check the middle column:
 17	0	AGENTS.md
 <n>	0	src/platform/linux/kwingrab.cpp
 <n>	0	src/platform/linux/misc.cpp
+<n>	0	src/stream.cpp
+<n>	0	src/video.cpp
 <n>	0	docs/configuration.md
 <n>	0	CLAUDE.md
 <n>	0	README.meow.md

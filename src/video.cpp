@@ -31,6 +31,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "meow/viewport_runtime.h"  // MEOW-TOUCH(viewport): crop geometry, wire format and session state
 #include "nvenc/nvenc_encoder.h"
 #include "platform/common.h"
 #include "sync.h"
@@ -196,6 +197,20 @@ namespace video {
   util::Either<avcodec_buffer_t, int> vulkan_init_avcodec_hardware_input_buffer(platf::avcodec_encode_device_t *);
 
   int avcodec_software_encode_device_t::convert(platf::img_t &img) {
+    // MEOW-TOUCH(viewport): crop the captured desktop to the rectangle the client is
+    // actually displaying before scaling into the encoder. All geometry, validation and
+    // policy live in src/meow/viewport.h; this reconfigures the scaler only when the
+    // planned rectangle changes, and re-blacks the padding so a shrinking crop cannot
+    // leave stale pixels in the border. The encode surface never changes size.
+    const auto crop = meow::viewport::plan_for_frame(this, img.width, img.height, sw_frame ? sw_frame->width : frame->width, sw_frame ? sw_frame->height : frame->height);
+    if (meow::viewport::configure_scaler(crop, *sws_input_frame, *sws_output_frame, offsetW, offsetH)) {
+      prefill();
+      if (reinit_sws(sws_src_format) < 0) {
+        return -1;
+      }
+      apply_colorspace();
+    }
+
     // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer
     bool requires_padding = (sw_frame->width != sws_output_frame->width || sw_frame->height != sws_output_frame->height);
 
@@ -232,6 +247,10 @@ namespace video {
     sws_input_frame->linesize[2] = 0;
     sws_input_frame->data[3] = nullptr;
     sws_input_frame->linesize[3] = 0;
+
+    // MEOW-TOUCH(viewport): two pointer additions move the scaler to the crop origin.
+    // This is the entire per-frame cost of a pan -- no allocation, no extra copy.
+    meow::viewport::offset_source_planes(*sws_input_frame, crop, img.row_pitch, pixel_pitch, input_fmt == AV_PIX_FMT_NV12);
 
     // Perform color conversion and scaling to the final size
     auto status = sws_scale_frame(sws.get(), requires_padding ? sws_output_frame.get() : sw_frame.get(), sws_input_frame.get());
@@ -339,6 +358,10 @@ namespace video {
     offsetH = (in_frame->height - out_height) / 2;
 
     sws_src_format = AV_PIX_FMT_BGR0;
+
+    // MEOW-TOUCH(viewport): publish this scaler's geometry and drop any rectangle left
+    // over from a previous session, display mode or encoder reinit.
+    meow::viewport::on_scaler_init(this, in_width, in_height, in_frame->width, in_frame->height);
 
     return reinit_sws(sws_src_format);
   }
