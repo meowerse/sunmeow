@@ -955,15 +955,37 @@ editing the `conf` file in a text editor. Use the examples as reference.
             For wlgrab/x11grab and kmsgrab the numeric id value can also be used.
             <br>
             <br>
-            For the `kwin` capture backend the reserved value `all` streams every enabled output
-            at once, as a single frame the size of the bounding box of the whole logical desktop.
-            KWin composites the region itself, so this works even when the outputs are driven by
-            different GPUs. Notes: areas of the bounding box that no output covers are rendered
-            black; the captured scale is the highest scale in use by any output; and the region is
-            fixed for the lifetime of a capture session, so connecting or disconnecting a monitor
-            only takes effect once the stream is restarted. Two monitors side by side produce a very
-            wide frame (5360x1440 is 3.7:1), so request a correspondingly wide resolution on the
-            client or expect the picture to be letterboxed into a thin strip.
+            The reserved value `all` streams every enabled output at once, as a single frame the
+            size of the bounding box of the whole logical desktop. KWin composites the region
+            itself, so this works even when the outputs are driven by different GPUs.
+            <br>
+            <br>
+            This requires <code>capture = kwin</code> to also be set. It is not enough to set
+            `output_name = all` on its own: on a default install the portal backend is selected
+            first and never yields to KWin, so the reserved value would go unmatched and a single
+            output would be streamed. A warning is logged when that happens. The value is matched
+            exactly and is lowercase — `All` and `ALL` are treated as ordinary output names and
+            will not match.
+            <br>
+            <br>
+            Notes: areas of the bounding box that no output covers are rendered black; the captured
+            scale is the highest scale in use by any output, so a mixed-DPI desktop is captured at
+            the density of its sharpest monitor; the reported refresh rate is the highest across the
+            contributing outputs; and the region is fixed for the lifetime of a capture session, so
+            connecting or disconnecting a monitor only takes effect once the stream is restarted.
+            Two monitors side by side produce a very wide frame (5360x1440 is 3.7:1), so request a
+            correspondingly wide resolution on the client or expect the picture to be letterboxed
+            into a thin strip.
+            <br>
+            <br>
+            Whole-desktop capture falls back to streaming a single output — it does not fail the
+            stream — when KWin's screencast protocol is older than version 3 (no region capture),
+            when the resulting frame would exceed the 8192x4096 limit the capture path can
+            negotiate, or when the monitor arrangement extends left of or above the origin. That
+            last case is refused because absolute pointer coordinates are derived from an
+            origin-anchored desktop size, so the picture would be correct while the mouse landed
+            somewhere else; move the arrangement so its top-left corner is at 0,0 to use it. Each
+            fallback states its reason in the log.
             <br>
             <br>
             **macOS:**
