@@ -41,6 +41,10 @@ starts:
 Info: meow viewport following: enabled. The client may request a crop of the desktop; ...
 ```
 
+When it is off, **no handler is registered at all** — the feature is inert rather than
+merely quiet, and a viewport packet from a client that speaks the extension falls through to
+`control_server_t::call()`'s unknown-type path exactly as it would against stock Sunshine.
+
 It is deliberately **not** registered in `src/config.cpp`, so it does not appear in the Web
 UI. Registering it there would drag `config.h`, `configuration.md`, `config.html` and
 `en.json` along with it — `tests/integration/test_config_consistency.cpp` enforces exactly
@@ -274,14 +278,30 @@ recorded here rather than defended against with another hook on the hot path.
 
 In the steady state, one relaxed atomic load, roughly a dozen integer operations and six
 integer comparisons — measured at well under 1 us/call by
-`MeowViewportSession.PerFramePlanningIsCheap`, against a 5.5 ms frame budget at 180 Hz. No
-allocation and no extra copy on any frame.
+`MeowViewportSession.PerFramePlanningIsCheap`, against a 5.5 ms frame budget at 180 Hz.
+**No allocation and no extra copy on a steady-state frame or on a pan.**
 
 A **pan** (same crop size, new origin) costs two pointer additions and nothing else: the
 scaler is not rebuilt, because its dimensions did not change. `MeowViewportEndToEnd`
 asserts both that a pan skips reconfiguration and that it still lands on the right pixels.
 
-A **zoom** (crop size changed) rebuilds the swscale filter tables once. The client rate
-limits viewport updates to one per 50 ms, so this is bounded at 20 Hz in the worst case and
-is zero while the user is reading. The encoder is never reinitialised and the encode surface
-never changes size.
+A **zoom** (crop size changed) does allocate, once: swscale's filter tables are rebuilt and
+the intermediate output frame is reallocated at the new size. The client rate limits viewport
+updates to one per 50 ms, so this is bounded at 20 Hz in the worst case and is zero while the
+user is reading. The encoder is never reinitialised and the encode surface never changes
+size.
+
+What a zoom deliberately does **not** do is reallocate the encode surface. Upstream's
+`prefill()` is the obvious way to re-blacken the padding, and it is the wrong one:
+`av_frame_get_buffer()` is documented "if frame already has been allocated, calling this
+function will leak memory", and the surface has been allocated since `init()`. At 1280x720
+NV12, twenty times a second during a pinch-zoom, that is tens of megabytes a second on a
+long-running server. `meow::viewport::reblack()` does only the black-fill, and
+`MeowViewportUpstream.CroppedConvertFillsTheStripAndDoesNotReallocate` drives the real
+encode device through a zoom sequence and fails if the surface buffer ever changes.
+
+If reinitialising swscale fails, the **crop** is dropped and the previous working
+configuration restored — not the session. Upstream reinitialised swscale at most twice per
+session, so a failure there was effectively unreachable after startup; a crop makes it
+reachable on every zoom, driven by network input, and `convert()` returning nonzero ends the
+stream.

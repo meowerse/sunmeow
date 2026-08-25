@@ -200,15 +200,18 @@ namespace video {
     // MEOW-TOUCH(viewport): crop the captured desktop to the rectangle the client is
     // actually displaying before scaling into the encoder. All geometry, validation and
     // policy live in src/meow/viewport.h; this reconfigures the scaler only when the
-    // planned rectangle changes, and re-blacks the padding so a shrinking crop cannot
-    // leave stale pixels in the border. The encode surface never changes size.
+    // planned rectangle changes, re-blacks the surface so a shrinking crop cannot leave
+    // stale pixels in the border, and drops the crop rather than the session if swscale
+    // cannot be reinitialised. The encode surface never changes size.
     const auto crop = meow::viewport::plan_for_frame(this, img.width, img.height, sw_frame ? sw_frame->width : frame->width, sw_frame ? sw_frame->height : frame->height);
-    if (meow::viewport::configure_scaler(crop, *sws_input_frame, *sws_output_frame, offsetW, offsetH)) {
-      prefill();
-      if (reinit_sws(sws_src_format) < 0) {
-        return -1;
-      }
-      apply_colorspace();
+    if (!meow::viewport::apply_plan(crop, *sws_input_frame, *sws_output_frame, offsetW, offsetH, sw_frame ? *sw_frame : *frame, [this]() {
+          const auto status = reinit_sws(sws_src_format);
+          if (status >= 0) {
+            apply_colorspace();
+          }
+          return status;
+        })) {
+      return -1;
     }
 
     // If we need to add aspect ratio padding, we need to scale into an intermediate output buffer

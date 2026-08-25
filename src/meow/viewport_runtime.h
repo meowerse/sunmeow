@@ -40,15 +40,20 @@
 #pragma once
 
 // standard includes
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <string_view>
 
 // lib includes
 extern "C" {
 #include <libavutil/frame.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/pixfmt.h>
 }
 
 // local includes
@@ -116,9 +121,25 @@ namespace meow::viewport {
     /**
      * @brief Address of the scaler entitled to act on `requested`.
      *
-     * Compared, never dereferenced. See the ownership note at the top of this file.
+     * Compared, never dereferenced -- which matters more than it looks:
+     * `make_avcodec_encode_session()` also runs during encoder probing at startup, so this
+     * routinely holds the address of a device that has already been destroyed.
      */
     inline std::atomic<const void *> owner {nullptr};
+
+    /**
+     * @brief Whether the host is currently willing to act on a request.
+     *
+     * Separate from `owner` so `reset()` can stop answering the client while still serving
+     * the running scaler a plan -- which is what makes a cropped scaler actually *revert*
+     * rather than freeze on its last crop.
+     */
+    inline std::atomic<bool> accepting {false};
+
+    /**
+     * @brief Set when the host dropped a crop on its own, and has not told the client yet.
+     */
+    inline std::atomic<bool> revoked {false};
 
   }  // namespace detail
 
@@ -192,22 +213,33 @@ namespace meow::viewport {
     const auto f = [](const int v) noexcept {
       return static_cast<std::uint64_t>(static_cast<std::uint16_t>(std::clamp(v, 0, 0xFFFF)));
     };
-    detail::requested.store(0, std::memory_order_relaxed);
+    // Dropping a crop the client still believes in is exactly the case that leaves it
+    // showing the whole desktop at 1:1 after it reset its own zoom, so remember to say so.
+    if (detail::requested.exchange(0, std::memory_order_relaxed) != 0) {
+      detail::revoked.store(true, std::memory_order_relaxed);
+    }
     detail::geometry.store(f(capture_width) | (f(capture_height) << 16) | (f(surface_width) << 32) | (f(surface_height) << 48), std::memory_order_relaxed);
     detail::owner.store(token, std::memory_order_release);
+    detail::accepting.store(true, std::memory_order_release);
   }
 
   /**
    * @brief Forget everything, so the next frame is a full desktop frame.
    *
-   * Called when the control broadcast ends. Belt and braces: `on_scaler_init()` already
-   * clears the rectangle at the start of the next session, but a session that ends and is
-   * never followed by another should not sit holding a rectangle either.
+   * Called when the control broadcast ends. `on_scaler_init()` already clears the rectangle
+   * at the start of the next session, so this is the belt to that pair of braces -- but it
+   * is also what stops a host whose next session does *not* run through the software scaler
+   * from being answered against this session's geometry.
    */
   inline void reset() noexcept {
+    // Order matters. Clearing the rectangle first means a scaler that is still running gets
+    // the full-frame plan on its very next frame and actually reverts; clearing `owner` or
+    // `geometry` first would make `plan_for_frame()` return "do not touch", freezing it on
+    // its last crop instead. `accepting` then stops any further request being answered, so
+    // nothing can re-crop on the way out.
     detail::requested.store(0, std::memory_order_relaxed);
-    detail::geometry.store(0, std::memory_order_relaxed);
-    detail::owner.store(nullptr, std::memory_order_release);
+    detail::revoked.store(false, std::memory_order_relaxed);
+    detail::accepting.store(false, std::memory_order_release);
   }
 
   /**
@@ -232,10 +264,12 @@ namespace meow::viewport {
    *         system an answer would be in.
    */
   [[nodiscard]] inline std::optional<echo_t> apply_request(const std::string_view payload) {
-    // Acquire on `owner` first, then read `geometry`. `on_scaler_init()` writes the geometry
-    // before releasing the owner, so this ordering is what guarantees the two are a matched
-    // pair rather than a torn read across an encoder reinit.
-    if (detail::owner.load(std::memory_order_acquire) == nullptr) {
+    // Acquire on `accepting` first, then read `geometry`. `on_scaler_init()` writes the
+    // geometry before releasing this flag, so the ordering is what guarantees the two are a
+    // matched pair rather than a torn read across an encoder reinit. It is also false on a
+    // host whose encoder never takes the software scaling path, which is how such a host
+    // stays silent instead of promising a crop it will not apply.
+    if (!detail::accepting.load(std::memory_order_acquire)) {
       return std::nullopt;
     }
 
@@ -254,7 +288,15 @@ namespace meow::viewport {
     const auto surface_height = static_cast<int>((packed_geometry >> 48) & 0xFFFF);
 
     const auto outcome = evaluate_request(payload, capture_width, capture_height, surface_width, surface_height);
+    if (!outcome.understood) {
+      // Change nothing and say nothing. See `request_outcome_t::understood`.
+      return std::nullopt;
+    }
+
     detail::requested.store(outcome.publish ? detail::pack(*outcome.publish) : 0, std::memory_order_relaxed);
+    // Whatever we just decided, the client is about to be told it, so there is no
+    // outstanding revocation left to report.
+    detail::revoked.store(false, std::memory_order_relaxed);
     if (!outcome.echo) {
       return std::nullopt;
     }
@@ -277,6 +319,44 @@ namespace meow::viewport {
       return std::nullopt;
     }
     return apply_request(payload);
+  }
+
+  /**
+   * @brief Claim an unreported revocation, if the host dropped a crop on its own.
+   *
+   * The echo is load-bearing: a client that has reset its local zoom to 1:1 on the strength
+   * of an earlier echo, and is then silently handed the full desktop again, shows it at 1:1
+   * with no way to know. The host drops a crop by itself on an encoder reinit or a display
+   * mode change mid-session (`on_scaler_init()`), and this is how the client finds out.
+   *
+   * One-shot: the flag is cleared by the read, so a caller that loses the returned value
+   * loses the notification. That is deliberate -- retrying forever would spam the control
+   * channel, and the next request the client sends is answered anyway.
+   *
+   * @return The full-content-area echo to send, or `std::nullopt` when nothing is pending.
+   */
+  [[nodiscard]] inline std::optional<echo_t> take_revocation_echo() noexcept {
+    if (!detail::revoked.exchange(false, std::memory_order_relaxed)) {
+      return std::nullopt;
+    }
+    if (!detail::accepting.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+
+    const auto packed_geometry = detail::geometry.load(std::memory_order_relaxed);
+    if (packed_geometry == 0) {
+      return std::nullopt;
+    }
+    const auto capture_width = static_cast<int>(packed_geometry & 0xFFFF);
+    const auto capture_height = static_cast<int>((packed_geometry >> 16) & 0xFFFF);
+    const auto surface_width = static_cast<int>((packed_geometry >> 32) & 0xFFFF);
+    const auto surface_height = static_cast<int>((packed_geometry >> 48) & 0xFFFF);
+
+    const auto full = to_reference({0, 0, capture_width, capture_height}, capture_width, capture_height, surface_width, surface_height);
+    if (full.width <= 0 || full.height <= 0) {
+      return std::nullopt;
+    }
+    return echo_t {full, capture_width, capture_height};
   }
 
   /**
@@ -403,6 +483,99 @@ namespace meow::viewport {
   }
 
   /**
+   * @brief Re-blacken the encode surface without reallocating it.
+   *
+   * When a crop shrinks, the scaled image no longer covers everything the previous one did,
+   * and the uncovered border keeps the old pixels -- a visibly corrupt frame. Upstream's
+   * `prefill()` solves that at init time, but it cannot be reused per frame:
+   * `av_frame_get_buffer()` is documented "if frame already has been allocated, calling this
+   * function will leak memory", and the surface has been allocated since `init()`. At
+   * 1280x720 NV12 that is ~1.35 MB leaked per crop change, up to twenty times a second while
+   * a user is pinch-zooming.
+   *
+   * So this does only the half that is wanted: fill black, no allocation. Upstream already
+   * assumes exclusive ownership of this frame -- the padding `memcpy` in `convert()` writes
+   * into it every frame with no `av_frame_make_writable()` -- so this makes no new
+   * assumption.
+   *
+   * @param surface Encode surface to blacken.
+   */
+  inline void reblack(AVFrame &surface) noexcept {
+    if (!surface.data[0]) {
+      return;
+    }
+    const std::array<std::ptrdiff_t, 4> linesize {surface.linesize[0], surface.linesize[1], surface.linesize[2], surface.linesize[3]};
+    av_image_fill_black(surface.data, linesize.data(), static_cast<AVPixelFormat>(surface.format), surface.color_range, surface.width, surface.height);
+  }
+
+  /**
+   * @brief Read back the plan a scaler is currently configured for.
+   *
+   * Used to restore a working configuration when a reconfiguration fails. The source origin
+   * is not stored anywhere on the scaler -- it lives only in the plane pointers, which are
+   * rebuilt from scratch every frame -- so it comes back as `{0, 0}`. That is exactly right
+   * for a restore: the pointers are re-derived from the restored plan on the same frame.
+   *
+   * @param sws_input Scaler input frame.
+   * @param sws_output Scaler output frame.
+   * @param offset_w Current horizontal padding offset.
+   * @param offset_h Current vertical padding offset.
+   * @return The plan describing the current configuration.
+   */
+  [[nodiscard]] inline plan_t current_scaler_plan(const AVFrame &sws_input, const AVFrame &sws_output, const int offset_w, const int offset_h) noexcept {
+    plan_t p;
+    p.source = {0, 0, sws_input.width, sws_input.height};
+    p.out_width = sws_output.width;
+    p.out_height = sws_output.height;
+    p.offset_w = offset_w;
+    p.offset_h = offset_h;
+    p.cropped = false;
+    return p;
+  }
+
+  /**
+   * @brief Apply a plan to the scaler, reinitialising it, and fall back if that fails.
+   *
+   * `reinit` is the caller's swscale reinitialisation -- it can only be done from inside
+   * `avcodec_software_encode_device_t`, whose scaler members are private.
+   *
+   * The fallback exists because the failure mode changed. Upstream reinitialised swscale at
+   * most twice per session, so a failure there was effectively unreachable after startup.
+   * A crop makes it reachable on every zoom, driven by network input, and `convert()`
+   * returning nonzero ends the session. A transient allocation failure must therefore drop
+   * the *crop*, not the stream.
+   *
+   * @tparam Reinit Callable returning `< 0` on failure.
+   * @param planned Plan to apply; `std::nullopt` leaves the scaler untouched.
+   * @param sws_input Scaler input frame.
+   * @param sws_output Scaler output frame.
+   * @param offset_w Horizontal padding offset; updated.
+   * @param offset_h Vertical padding offset; updated.
+   * @param surface Encode surface, re-blackened when the configuration changes.
+   * @param reinit Reinitialises swscale for the new dimensions.
+   * @return `false` only when even the previous configuration cannot be restored, which is
+   *         genuinely fatal to the session.
+   */
+  template<class Reinit>
+  [[nodiscard]] bool apply_plan(const std::optional<plan_t> &planned, AVFrame &sws_input, AVFrame &sws_output, int &offset_w, int &offset_h, AVFrame &surface, Reinit reinit) {
+    const auto previous = current_scaler_plan(sws_input, sws_output, offset_w, offset_h);
+    if (!configure_scaler(planned, sws_input, sws_output, offset_w, offset_h)) {
+      return true;
+    }
+
+    reblack(surface);
+    if (reinit() >= 0) {
+      return true;
+    }
+
+    // Put back what was working. `configure_scaler` will report a change (we just moved
+    // away from it), so the reinit below is required, not optional.
+    static_cast<void>(configure_scaler(previous, sws_input, sws_output, offset_w, offset_h));
+    reblack(surface);
+    return reinit() >= 0;
+  }
+
+  /**
    * @brief Move the scaler's plane pointers to the crop origin.
    *
    * Called after the caller has pointed the input frame at the captured buffer. This is
@@ -461,20 +634,29 @@ namespace meow::viewport {
    * @param table The host's control-stream packet type table.
    * @param count Number of entries in `table`.
    * @param echo Callback used to echo the applied rectangle to the client.
+   * @param enabled Whether the host configuration opts in; passed rather than read here so
+   *        the whole decision is testable (the config gate reads a file once into a
+   *        function-local static that a test cannot influence).
    * @return What happened, and what to log about it.
    */
   template<class Server, class Echo>
-  [[nodiscard]] registration_t map_request_handler(Server &server, const short *const table, const std::size_t count, Echo echo) {
+  [[nodiscard]] registration_t map_request_handler(Server &server, const short *const table, const std::size_t count, Echo echo, const bool enabled) {
     if (packet_type_collision(table, count)) {
       return {false, following_status(false), packet_type_collision_warning()};
     }
+    if (!enabled) {
+      // Install nothing. The feature is then genuinely inert rather than merely quiet: a
+      // viewport packet from a client that speaks the extension falls through to
+      // `control_server_t::call()`'s unknown-type path, which logs at debug and returns.
+      return {false, following_status(false), {}};
+    }
 
     server.map(control_packet_type, [echo](auto *session, const std::string_view &payload) {
-      if (const auto applied = on_request(payload)) {
+      if (const auto applied = apply_request(payload)) {
         echo(session, *applied);
       }
     });
-    return {true, following_status(following_enabled()), {}};
+    return {true, following_status(true), {}};
   }
 
 }  // namespace meow::viewport

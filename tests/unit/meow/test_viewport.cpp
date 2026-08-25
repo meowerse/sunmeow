@@ -11,8 +11,11 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <random>
 #include <string>
@@ -22,6 +25,7 @@
 
 // ffmpeg includes
 extern "C" {
+#include <libavutil/buffer.h>
 #include <libavutil/frame.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixfmt.h>
@@ -31,6 +35,8 @@ extern "C" {
 // local includes
 #include <src/meow/viewport.h>
 #include <src/meow/viewport_runtime.h>
+#include <src/platform/common.h>
+#include <src/video.h>
 
 namespace {
 
@@ -237,10 +243,12 @@ TEST(MeowViewportWire, DoesNotCollideWithUpstreamPacketTypes) {
 // ---------------------------------------------------------------------------------
 
 /**
- * @brief Characterization of `avcodec_software_encode_device_t::init()`.
+ * @brief Upstream's `avcodec_software_encode_device_t::init()` arithmetic, transcribed.
  *
- * `src/video.cpp` is on CLAUDE.md §5's untested-module list, so the behaviour this change
- * hooks into is pinned first. This is upstream's arithmetic transcribed literally:
+ * A transcription, not a characterization: it never executes a line of `src/video.cpp`, so
+ * if this transcription is wrong then `full_frame_plan()` is wrong in the same way and both
+ * agree. It pins the two copies together, which is worth having; the test that actually
+ * runs upstream's code is `MeowViewportUpstream.*` below. Upstream's arithmetic is:
  *
  * ```
  * auto scalar = std::fminf((float) out_width / in_width, (float) out_height / in_height);
@@ -269,14 +277,14 @@ static plan_t upstream_init_formula(const int capture_w, const int capture_h, co
 }
 
 /**
- * @brief With no viewport, the plan is bit-identical to what upstream configures today.
+ * @brief With no viewport, the plan matches the transcribed upstream formula exactly.
  *
  * This is the compatibility floor: stock Moonlight, an older moonmeow, or any client that
  * never sends the packet must get an unchanged full-desktop stream. Checked across a
  * spread of shapes including deliberately awkward ones that produce odd out/offset values,
  * because reproducing those *exactly* is the point.
  */
-TEST(MeowViewportPlan, NoRequestReproducesUpstreamFormula) {
+TEST(MeowViewportPlan, NoRequestMatchesTheTranscribedUpstreamFormula) {
   const std::vector<std::array<int, 4>> cases {
     {desktop_w, desktop_h, surface_w, surface_h},  // the user's real desktop
     {5360, 1440, 1920, 1080},
@@ -749,18 +757,16 @@ TEST(MeowViewportRequest, EchoesTheAppliedRectangleNotTheRequestedOne) {
 }
 
 /**
- * @brief A refused request publishes nothing and echoes the whole visible strip.
+ * @brief A request the host cannot honour publishes nothing and echoes the whole strip.
  *
- * "Refused" and "lost in transit" must not look the same to the client.
+ * These all parse. The host understood them and decided against them, so it says so —
+ * "refused" and "lost in transit" must not look the same to the client.
  */
-TEST(MeowViewportRequest, RefusedRequestEchoesTheFullDesktop) {
+TEST(MeowViewportRequest, UnhonourableRequestEchoesTheFullDesktop) {
   const auto ref = reference_frame(desktop_w, desktop_h, surface_w, surface_h);
   const rect_t whole_desktop_in_frame {ref.content_x, ref.content_y, ref.content_width, ref.content_height};
 
   const std::vector<std::pair<const char *, std::string>> refused {
-    {"unparseable", "not a viewport payload"},
-    {"bad version", make_payload(9, 0, 100, 300, 400, 200)},
-    {"zero size", make_payload(1, 0, 100, 300, 0, 0)},
     {"wholly outside", make_payload(1, 0, 60000, 60000, 800, 600)},
     {"entirely padding", make_payload(1, 0, 0, 0, 1280, 100)},
     {"degenerate aspect", make_payload(1, 0, 0, 300, 1280, 4)},
@@ -769,9 +775,35 @@ TEST(MeowViewportRequest, RefusedRequestEchoesTheFullDesktop) {
 
   for (const auto &[name, payload] : refused) {
     const auto outcome = evaluate_request(payload, desktop_w, desktop_h, surface_w, surface_h);
+    EXPECT_TRUE(outcome.understood) << name;
     EXPECT_FALSE(outcome.publish.has_value()) << name;
     ASSERT_TRUE(outcome.echo.has_value()) << name;
     EXPECT_EQ(*outcome.echo, whole_desktop_in_frame) << name;
+  }
+}
+
+/**
+ * @brief A message the host cannot parse changes nothing at all.
+ *
+ * "Stop cropping" has its own representation — a rectangle covering the whole encoded
+ * frame. A truncated packet, a corrupted one, or one from a future client speaking a
+ * version we reject carries no such meaning, and reading it as one would throw away the
+ * user's zoom on a single bad packet.
+ */
+TEST(MeowViewportRequest, UnparseableRequestChangesNothing) {
+  const std::vector<std::pair<const char *, std::string>> ignored {
+    {"unparseable", "not a viewport payload"},
+    {"empty", ""},
+    {"truncated", make_payload(1, 0, 100, 300, 400, 200).substr(0, 9)},
+    {"future version", make_payload(9, 0, 100, 300, 400, 200)},
+    {"zero size", make_payload(1, 0, 100, 300, 0, 0)},
+  };
+
+  for (const auto &[name, payload] : ignored) {
+    const auto outcome = evaluate_request(payload, desktop_w, desktop_h, surface_w, surface_h);
+    EXPECT_FALSE(outcome.understood) << name;
+    EXPECT_FALSE(outcome.echo.has_value()) << name;
+    EXPECT_FALSE(outcome.publish.has_value()) << name;
   }
 }
 
@@ -874,6 +906,121 @@ TEST(MeowViewportScaler, ReconfiguresOnlyWhenSomethingChanged) {
 
   av_frame_free(&in);
   av_frame_free(&out);
+}
+
+/**
+ * @brief A failed reconfiguration drops the crop, not the session.
+ *
+ * `convert()` returning nonzero ends the encode loop and the session. Upstream
+ * reinitialised swscale at most twice per session, so a failure there was effectively
+ * unreachable after startup; a crop makes it reachable on every zoom, driven by network
+ * input. A transient allocation failure must therefore cost the user their zoom, not their
+ * stream — and must leave the scaler on a configuration that still works.
+ */
+TEST(MeowViewportScaler, FailedReinitRestoresTheWorkingConfiguration) {
+  AVFrame *in = av_frame_alloc();
+  AVFrame *out = av_frame_alloc();
+  AVFrame *surface = av_frame_alloc();
+  ASSERT_NE(in, nullptr);
+  ASSERT_NE(out, nullptr);
+  ASSERT_NE(surface, nullptr);
+
+  int offset_w = 0;
+  int offset_h = 188;
+  in->width = desktop_w;
+  in->height = desktop_h;
+  out->width = 1280;
+  out->height = 343;
+  out->format = AV_PIX_FMT_NV12;
+  surface->width = surface_w;
+  surface->height = surface_h;
+  surface->format = AV_PIX_FMT_NV12;
+  ASSERT_EQ(av_frame_get_buffer(surface, 0), 0);
+
+  const auto cropped = plan(desktop_w, desktop_h, surface_w, surface_h, rect_t {1920, 180, 1920, 1080});
+  ASSERT_TRUE(cropped.cropped);
+
+  int reinit_calls = 0;
+  const auto always_fails = [&reinit_calls] {
+    ++reinit_calls;
+    return -1;
+  };
+
+  // The crop is attempted, fails, and the previous configuration comes back. The second
+  // reinit fails too in this fixture, so the call reports the genuinely fatal case.
+  EXPECT_FALSE(meow::viewport::apply_plan(cropped, *in, *out, offset_w, offset_h, *surface, always_fails));
+  EXPECT_EQ(reinit_calls, 2) << "one attempt, one restore";
+  EXPECT_EQ(in->width, desktop_w) << "the scaler must be back on what was working";
+  EXPECT_EQ(in->height, desktop_h);
+  EXPECT_EQ(out->width, 1280);
+  EXPECT_EQ(out->height, 343);
+  EXPECT_EQ(offset_h, 188);
+
+  // With a restore that succeeds, the session survives and the crop is simply dropped.
+  int calls = 0;
+  const auto fails_once = [&calls] {
+    return ++calls == 1 ? -1 : 0;
+  };
+  EXPECT_TRUE(meow::viewport::apply_plan(cropped, *in, *out, offset_w, offset_h, *surface, fails_once));
+  EXPECT_EQ(calls, 2);
+  EXPECT_EQ(in->width, desktop_w);
+  EXPECT_EQ(out->height, 343);
+
+  // And a reconfiguration that works is applied with a single reinit.
+  int ok_calls = 0;
+  const auto succeeds = [&ok_calls] {
+    ++ok_calls;
+    return 0;
+  };
+  EXPECT_TRUE(meow::viewport::apply_plan(cropped, *in, *out, offset_w, offset_h, *surface, succeeds));
+  EXPECT_EQ(ok_calls, 1);
+  EXPECT_EQ(in->width, 1920);
+  EXPECT_EQ(out->width, 1280);
+  EXPECT_EQ(out->height, 720);
+
+  // A steady state costs no reinit at all.
+  ok_calls = 0;
+  EXPECT_TRUE(meow::viewport::apply_plan(cropped, *in, *out, offset_w, offset_h, *surface, succeeds));
+  EXPECT_EQ(ok_calls, 0);
+
+  av_frame_free(&in);
+  av_frame_free(&out);
+  av_frame_free(&surface);
+}
+
+/**
+ * @brief Re-blackening the surface does not reallocate it.
+ */
+TEST(MeowViewportScaler, ReblackKeepsTheSameAllocation) {
+  AVFrame *surface = av_frame_alloc();
+  ASSERT_NE(surface, nullptr);
+  surface->width = 320;
+  surface->height = 180;
+  surface->format = AV_PIX_FMT_NV12;
+  ASSERT_EQ(av_frame_get_buffer(surface, 0), 0);
+  std::memset(surface->data[0], 0x7F, static_cast<std::size_t>(surface->linesize[0]) * surface->height);
+
+  const auto *buffer = surface->buf[0];
+  for (int i = 0; i < 100; ++i) {
+    meow::viewport::reblack(*surface);
+    ASSERT_EQ(surface->buf[0], buffer) << i;
+    ASSERT_EQ(av_buffer_get_ref_count(surface->buf[0]), 1) << i;
+  }
+  // Limited range, so "black" is luma 16 -- the same value upstream's prefill() writes, and
+  // the reason the padding assertions elsewhere in this file test against 20 rather than 0.
+  EXPECT_EQ(surface->data[0][0], 16) << "and it actually blackens";
+
+  // An unallocated frame is simply left alone rather than dereferenced.
+  AVFrame *empty = av_frame_alloc();
+  ASSERT_NE(empty, nullptr);
+  empty->width = 320;
+  empty->height = 180;
+  empty->format = AV_PIX_FMT_NV12;
+  meow::viewport::reblack(*empty);
+  EXPECT_EQ(empty->data[0], nullptr);
+
+  av_frame_free(&empty);
+  av_frame_free(&surface);
 }
 
 /**
@@ -1043,8 +1190,8 @@ namespace {
  * This also proves the reconfigure is safe: the intermediate output frame is allocated by
  * `sws_scale_frame()` on first use, and is scaled into again at a different size after
  * `configure_scaler()` has changed its dimensions. Getting that wrong writes past the end
- * of a heap buffer, which the sanitizer-enabled CI build would catch here rather than in
- * production.
+ * of a heap buffer — silently, most of the time, which is why the reconfiguration is
+ * exercised here against real swscale rather than reasoned about.
  */
 TEST(MeowViewportEndToEnd, CropSelectsTheRequestedRegionThroughRealSwscale) {
   constexpr int capture_w = 800;
@@ -1133,6 +1280,193 @@ TEST(MeowViewportEndToEnd, CropSelectsTheRequestedRegionThroughRealSwscale) {
 }
 
 // ---------------------------------------------------------------------------------
+// Real characterization: upstream's own software encode device, no GPU required.
+// ---------------------------------------------------------------------------------
+
+namespace {
+
+  /**
+   * @brief A captured image backed by a caller-owned BGR0 buffer.
+   */
+  struct fake_img_t: platf::img_t {
+    ~fake_img_t() override = default;
+  };
+
+  /**
+   * @brief Fill a BGR0 buffer white on the right half and black on the left.
+   * @param buffer Destination buffer.
+   * @param w Width in pixels.
+   * @param h Height in pixels.
+   * @param pixel_pitch Bytes per pixel.
+   */
+  void paint_half_white(std::vector<std::uint8_t> &buffer, const int w, const int h, const int pixel_pitch) {
+    const auto row_pitch = static_cast<std::size_t>(w) * pixel_pitch;
+    buffer.assign(row_pitch * h, 0);
+    for (int y = 0; y < h; ++y) {
+      for (int x = w / 2; x < w; ++x) {
+        auto *px = buffer.data() + static_cast<std::size_t>(y) * row_pitch + static_cast<std::size_t>(x) * pixel_pitch;
+        px[0] = px[1] = px[2] = 0xFF;
+      }
+    }
+  }
+
+  /**
+   * @brief Mean luma of a row of the encode surface.
+   * @param frame Encode surface.
+   * @param row Row index.
+   * @return Mean value of the Y plane across that row.
+   */
+  double row_luma(const AVFrame &frame, const int row) {
+    double total = 0;
+    for (int x = 0; x < frame.width; ++x) {
+      total += frame.data[0][static_cast<std::size_t>(row) * frame.linesize[0] + x];
+    }
+    return total / frame.width;
+  }
+
+}  // namespace
+
+/**
+ * @brief Upstream's software encode device letterboxes an ultrawide capture, and still does.
+ *
+ * `src/video.cpp` is on CLAUDE.md §5's untested-module list and this change hooks three
+ * places inside it, so this drives the real `avcodec_software_encode_device_t` — `init()`,
+ * `set_frame()`, `apply_colorspace()` and `convert()` — over a real captured buffer, with no
+ * GPU, no display and no client. It is the only test here that executes upstream's code.
+ *
+ * With no viewport, an 800x200 capture in a 320x180 surface must land as a centred 320x80
+ * strip with black padding above and below. That pins the padding placement, the `offsetW`/
+ * `offsetH` arithmetic and the `requires_padding` `memcpy` — the exact machinery the crop
+ * hooks reconfigure.
+ */
+TEST(MeowViewportUpstream, UncroppedConvertLetterboxesExactlyAsBefore) {
+  meow::viewport::reset();
+
+  constexpr int capture_w = 800;
+  constexpr int capture_h = 200;
+  constexpr int enc_w = 320;
+  constexpr int enc_h = 180;
+  constexpr int pixel_pitch = 4;
+
+  std::vector<std::uint8_t> desktop;
+  paint_half_white(desktop, capture_w, capture_h, pixel_pitch);
+
+  fake_img_t img;
+  img.data = desktop.data();
+  img.width = capture_w;
+  img.height = capture_h;
+  img.pixel_pitch = pixel_pitch;
+  img.row_pitch = capture_w * pixel_pitch;
+
+  AVFrame *surface = av_frame_alloc();
+  ASSERT_NE(surface, nullptr);
+  surface->width = enc_w;
+  surface->height = enc_h;
+  surface->format = AV_PIX_FMT_NV12;
+
+  video::avcodec_software_encode_device_t device;
+  device.colorspace = {video::colorspace_e::rec601, false, 8};
+  ASSERT_EQ(device.init(capture_w, capture_h, surface, AV_PIX_FMT_NV12, false), 0);
+  ASSERT_EQ(device.set_frame(surface, nullptr), 0);
+  device.apply_colorspace();
+  ASSERT_EQ(device.convert(img), 0);
+
+  // 800x200 into 320x180 scales by 0.4 -> a 320x80 strip, centred with 50 rows of padding.
+  const auto expected_offset = (enc_h - static_cast<int>(capture_h * 0.4f)) / 2;
+  ASSERT_EQ(expected_offset, 50);
+
+  EXPECT_LT(row_luma(*surface, 0), 20.0) << "top padding must be black";
+  EXPECT_LT(row_luma(*surface, enc_h - 1), 20.0) << "bottom padding must be black";
+  const auto middle = row_luma(*surface, enc_h / 2);
+  EXPECT_GT(middle, 40.0) << "the middle row shows half a white desktop";
+  EXPECT_LT(middle, 200.0);
+}
+
+/**
+ * @brief A crop reaches the encoder through upstream's convert(), without leaking the surface.
+ *
+ * Two things at once, because they are only observable together on the real device.
+ *
+ * First: cropping to the white half of the desktop must make the *whole* visible strip
+ * white, through the real `convert()` — the source rect, the plane pointers, the scaler
+ * reconfiguration and the padding memcpy all agreeing.
+ *
+ * Second, and this is the regression this test exists for: the encode surface buffer must
+ * be the same allocation before and after. An earlier revision called upstream's
+ * `prefill()` on every crop change to re-blacken the padding. `prefill()` calls
+ * `av_frame_get_buffer()`, documented "if frame already has been allocated, calling this
+ * function will leak memory" — which at 1280x720 NV12, twenty times a second during a
+ * pinch-zoom, is tens of megabytes a second on a long-running server. `buf[0]` changing
+ * here is that bug coming back.
+ */
+TEST(MeowViewportUpstream, CroppedConvertFillsTheStripAndDoesNotReallocate) {
+  meow::viewport::reset();
+
+  constexpr int capture_w = 800;
+  constexpr int capture_h = 200;
+  constexpr int enc_w = 320;
+  constexpr int enc_h = 180;
+  constexpr int pixel_pitch = 4;
+
+  std::vector<std::uint8_t> desktop;
+  paint_half_white(desktop, capture_w, capture_h, pixel_pitch);
+
+  fake_img_t img;
+  img.data = desktop.data();
+  img.width = capture_w;
+  img.height = capture_h;
+  img.pixel_pitch = pixel_pitch;
+  img.row_pitch = capture_w * pixel_pitch;
+
+  AVFrame *surface = av_frame_alloc();
+  ASSERT_NE(surface, nullptr);
+  surface->width = enc_w;
+  surface->height = enc_h;
+  surface->format = AV_PIX_FMT_NV12;
+
+  video::avcodec_software_encode_device_t device;
+  device.colorspace = {video::colorspace_e::rec601, false, 8};
+  ASSERT_EQ(device.init(capture_w, capture_h, surface, AV_PIX_FMT_NV12, false), 0);
+  ASSERT_EQ(device.set_frame(surface, nullptr), 0);
+  device.apply_colorspace();
+  ASSERT_EQ(device.convert(img), 0);
+
+  ASSERT_NE(surface->buf[0], nullptr);
+  const auto *original_buffer = surface->buf[0];
+  const auto *original_data = surface->data[0];
+
+  // Walk a series of distinct crops, the way a pinch-zoom does.
+  const std::vector<rect_t> zoom_sequence {
+    {capture_w / 2, 0, capture_w / 2, capture_h},
+    {capture_w / 2, 0, 300, 180},
+    {capture_w / 2, 0, 260, 160},
+    {capture_w / 2, 0, 220, 140},
+    {capture_w / 2, 0, capture_w / 2, capture_h},
+  };
+
+  for (const auto &r : zoom_sequence) {
+    meow::viewport::detail::requested.store(meow::viewport::detail::pack(r));
+    ASSERT_EQ(device.convert(img), 0) << r.width << 'x' << r.height;
+    EXPECT_EQ(surface->buf[0], original_buffer) << "the encode surface was reallocated for a crop of " << r.width << 'x' << r.height;
+    EXPECT_EQ(surface->data[0], original_data);
+    EXPECT_EQ(av_buffer_get_ref_count(surface->buf[0]), 1);
+  }
+
+  // The last crop covers only white desktop, so every visible row is white.
+  const auto middle = row_luma(*surface, enc_h / 2);
+  EXPECT_GT(middle, 220.0) << "the crop covers only white pixels, mean luma was " << middle;
+  EXPECT_LT(row_luma(*surface, 0), 20.0) << "padding must still be black";
+
+  // Reverting puts the whole desktop back, half black again.
+  meow::viewport::detail::requested.store(0);
+  ASSERT_EQ(device.convert(img), 0);
+  EXPECT_LT(row_luma(*surface, enc_h / 2), 200.0);
+  EXPECT_EQ(surface->buf[0], original_buffer);
+
+  meow::viewport::reset();
+}
+
+// ---------------------------------------------------------------------------------
 // Session state.
 // ---------------------------------------------------------------------------------
 
@@ -1150,7 +1484,36 @@ TEST(MeowViewportSession, NonOwnersAreLeftAlone) {
   EXPECT_FALSE(meow::viewport::plan_for_frame(&other, desktop_w, desktop_h, surface_w, surface_h).has_value());
 
   meow::viewport::reset();
-  EXPECT_FALSE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h).has_value());
+}
+
+/**
+ * @brief `reset()` makes a cropped scaler revert, and stops the host answering.
+ *
+ * The distinction matters and was wrong once: clearing `owner` or `geometry` first would
+ * make `plan_for_frame()` return "do not touch", freezing the scaler on its last crop for
+ * the rest of the session instead of reverting it. What `reset()` must do is keep serving
+ * the running scaler a plan — the full-frame one — while refusing to answer anybody.
+ */
+TEST(MeowViewportSession, ResetRevertsRatherThanFreezes) {
+  meow::viewport::reset();
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  ASSERT_TRUE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+
+  meow::viewport::reset();
+
+  const auto after = meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(after.has_value()) << "the running scaler must still be served a plan";
+  EXPECT_FALSE(after->cropped);
+  EXPECT_EQ(*after, full_frame_plan(desktop_w, desktop_h, surface_w, surface_h));
+
+  // ... and nothing can re-crop on the way out.
+  EXPECT_FALSE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  EXPECT_EQ(meow::viewport::detail::requested.load(), 0u);
+  EXPECT_FALSE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+
+  meow::viewport::reset();
 }
 
 /**
@@ -1260,32 +1623,35 @@ TEST(MeowViewportSession, UnclaimedStateProducesNoEcho) {
 }
 
 /**
- * @brief A request the host refuses publishes nothing and leaves the stream uncropped.
+ * @brief "Not zoomed in" clears the crop; an unparseable packet does not.
  *
- * Driven through the real state machine rather than the pure function, so the store on the
- * "refused" path is covered too — a leftover rectangle here would crop the stream to
- * something the client was told it would not get.
+ * Driven through the real state machine rather than the pure function, so the stores on
+ * both paths are covered. A leftover rectangle on the first would crop the stream to
+ * something the client was told it would not get; a cleared one on the second would throw
+ * away the user's zoom because a single packet arrived corrupted.
  */
-TEST(MeowViewportSession, RefusedRequestClearsWhatWasPublished) {
+TEST(MeowViewportSession, ClearingIsDeliberateNotAccidental) {
   meow::viewport::reset();
   int me = 0;
   meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
 
-  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  const auto zoom = make_payload(1, 0, 640, 188, 640, 343);
+  ASSERT_TRUE(meow::viewport::apply_request(zoom).has_value());
   ASSERT_TRUE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
 
-  // Now a rectangle covering the whole encoded frame: "not zoomed in", so stop cropping.
-  const auto echoed = meow::viewport::apply_request(make_payload(1, 0, 0, 0, surface_w, surface_h));
-  ASSERT_TRUE(echoed.has_value());
+  // A rectangle covering the whole encoded frame: "not zoomed in", so stop cropping.
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 0, 0, surface_w, surface_h)).has_value());
   EXPECT_EQ(meow::viewport::detail::requested.load(), 0u);
   EXPECT_FALSE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
 
-  // ... and an unparseable one does the same rather than stranding the previous crop.
-  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
-  ASSERT_TRUE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
-  EXPECT_TRUE(meow::viewport::apply_request("garbage").has_value());
-  EXPECT_EQ(meow::viewport::detail::requested.load(), 0u);
-  EXPECT_FALSE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+  // Garbage, however, must leave an active crop exactly where it was.
+  ASSERT_TRUE(meow::viewport::apply_request(zoom).has_value());
+  const auto before = meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(before->cropped);
+  EXPECT_FALSE(meow::viewport::apply_request("garbage").has_value()) << "and it is not answered either";
+  const auto after = meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ(*after, *before) << "one corrupted packet must not throw away the user's zoom";
 
   meow::viewport::reset();
 }
@@ -1324,6 +1690,57 @@ TEST(MeowViewportSession, RepeatingTheSameRequestIsIdempotent) {
   EXPECT_EQ(*plan_again, *plan_while_cropped);
 
   meow::viewport::reset();
+}
+
+/**
+ * @brief When the host drops a crop by itself, it has something to tell the client.
+ *
+ * The client resets its local zoom to 1:1 on the strength of an echo. If the host then
+ * revokes the crop on its own — an encoder reinit or a display mode change re-runs
+ * `on_scaler_init()` — and says nothing, the client shows the whole desktop at 1:1 with no
+ * way to know why. This is the notification that closes that hole.
+ */
+TEST(MeowViewportSession, RevokingACropLeavesSomethingToTell) {
+  meow::viewport::reset();
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+
+  // Nothing to report before anything was applied.
+  EXPECT_FALSE(meow::viewport::take_revocation_echo().has_value());
+
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  ASSERT_TRUE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+  EXPECT_FALSE(meow::viewport::take_revocation_echo().has_value()) << "the client was just told";
+
+  // An encoder reinit drops the crop.
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  const auto revocation = meow::viewport::take_revocation_echo();
+  ASSERT_TRUE(revocation.has_value());
+
+  const auto ref = reference_frame(desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_EQ(revocation->applied, (rect_t {ref.content_x, ref.content_y, ref.content_width, ref.content_height}));
+  EXPECT_EQ(revocation->capture_width, desktop_w);
+  EXPECT_EQ(revocation->capture_height, desktop_h);
+
+  // One-shot: a second drain finds nothing.
+  EXPECT_FALSE(meow::viewport::take_revocation_echo().has_value());
+
+  // A reinit with no crop in force has nothing to revoke.
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_FALSE(meow::viewport::take_revocation_echo().has_value());
+
+  // Answering a request supersedes a pending revocation rather than sending both.
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 300, 200, 400, 300)).has_value());
+  EXPECT_FALSE(meow::viewport::take_revocation_echo().has_value());
+
+  // And a session that has ended has nobody to tell.
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  meow::viewport::reset();
+  EXPECT_FALSE(meow::viewport::take_revocation_echo().has_value());
 }
 
 /**
@@ -1374,6 +1791,121 @@ TEST(MeowViewportSession, PerFramePlanningIsCheap) {
   std::cout << "[          ] plan_for_frame(): " << ns_per_call << " ns/call" << std::endl;
 
   meow::viewport::reset();
+}
+
+// ---------------------------------------------------------------------------------
+// Control-stream registration.
+// ---------------------------------------------------------------------------------
+
+namespace {
+
+  /**
+   * @brief Stand-in for `stream::session_t`, which is private to `src/stream.cpp`.
+   */
+  struct fake_session_t {
+    int id {};
+  };
+
+  /**
+   * @brief Records what was registered, standing in for `stream::control_server_t`.
+   *
+   * Not a mock of a collaborator whose calls are then asserted for their own sake: the
+   * handler it records is *invoked* below and its real effect on the real session state is
+   * what the tests check. `control_server_t` cannot be constructed without an ENet host.
+   */
+  struct recording_server_t {
+    std::map<std::uint16_t, std::function<void(fake_session_t *, const std::string_view &)>> handlers;
+
+    /**
+     * @brief Record a handler registration.
+     * @param type Control message type.
+     * @param handler Callback registered for it.
+     */
+    void map(const std::uint16_t type, std::function<void(fake_session_t *, const std::string_view &)> handler) {
+      handlers.emplace(type, std::move(handler));
+    }
+  };
+
+}  // namespace
+
+/**
+ * @brief The handler is registered on the viewport packet type and dispatches to the echo.
+ */
+TEST(MeowViewportRegistration, RegistersAndDispatches) {
+  meow::viewport::reset();
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+
+  recording_server_t server;
+  std::vector<std::pair<int, meow::viewport::echo_t>> sent;
+  const auto echo = [&sent](fake_session_t *session, const meow::viewport::echo_t &e) {
+    sent.emplace_back(session->id, e);
+  };
+
+  static const short clean_table[] = {0x0305, 0x0307, 0x0201, 0x010e, 0x5503};
+  const auto registration = meow::viewport::map_request_handler(server, clean_table, std::size(clean_table), echo, true);
+
+  EXPECT_TRUE(registration.registered);
+  EXPECT_TRUE(registration.warning.empty());
+  EXPECT_FALSE(registration.note.empty()) << "the host log must say whether this is on";
+  ASSERT_EQ(server.handlers.count(control_packet_type), 1u);
+
+  fake_session_t session {7};
+  server.handlers.at(control_packet_type)(&session, make_payload(1, 0, 640, 188, 640, 343));
+  ASSERT_EQ(sent.size(), 1u);
+  EXPECT_EQ(sent[0].first, 7);
+  EXPECT_EQ(sent[0].second.applied, (rect_t {640, 188, 640, 343}));
+  EXPECT_EQ(sent[0].second.capture_width, desktop_w);
+
+  // A message the host cannot parse produces no echo at all.
+  server.handlers.at(control_packet_type)(&session, "garbage");
+  EXPECT_EQ(sent.size(), 1u);
+
+  meow::viewport::reset();
+}
+
+/**
+ * @brief With the feature off, nothing is installed at all.
+ *
+ * The compatibility floor is not "the handler runs and decides to do nothing" — it is that
+ * the handler is not there. A client that speaks the extension against a host that has not
+ * opted in falls through to the unknown-type path, exactly as it would against stock
+ * Sunshine.
+ */
+TEST(MeowViewportRegistration, DisabledInstallsNothing) {
+  recording_server_t server;
+  const auto echo = [](fake_session_t *, const meow::viewport::echo_t &) {
+  };
+
+  static const short clean_table[] = {0x0305, 0x0307};
+  const auto registration = meow::viewport::map_request_handler(server, clean_table, std::size(clean_table), echo, false);
+
+  EXPECT_FALSE(registration.registered);
+  EXPECT_TRUE(server.handlers.empty());
+  EXPECT_TRUE(registration.warning.empty()) << "off is not an error";
+  EXPECT_NE(registration.note.find(meow::viewport::following_config_key), std::string::npos) << "the log must name the key to turn it on";
+}
+
+/**
+ * @brief A packet number already used upstream refuses registration rather than stealing it.
+ *
+ * This is what makes the two independent definitions of the wire number checkable instead
+ * of trusted. Dispatching a genuine upstream control message into the viewport handler
+ * would break whatever feature owned that number, silently.
+ */
+TEST(MeowViewportRegistration, RefusesToStealAnUpstreamPacketNumber) {
+  recording_server_t server;
+  const auto echo = [](fake_session_t *, const meow::viewport::echo_t &) {
+  };
+
+  static const short colliding_table[] = {0x0305, 0x3003, 0x0201};
+  const auto registration = meow::viewport::map_request_handler(server, colliding_table, std::size(colliding_table), echo, true);
+
+  EXPECT_FALSE(registration.registered);
+  EXPECT_TRUE(server.handlers.empty()) << "nothing may be installed on a collision";
+  EXPECT_FALSE(registration.warning.empty());
+  EXPECT_NE(registration.warning.find("0x3003"), std::string::npos) << "the log must name the number";
+  EXPECT_NE(registration.warning.find("packetTypesGen7Enc"), std::string::npos) << "and where the other definition lives";
 }
 
 // ---------------------------------------------------------------------------------

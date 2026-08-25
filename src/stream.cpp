@@ -1170,7 +1170,7 @@ namespace stream {
     // MEOW-TOUCH(viewport): viewport ("foveated streaming") crop requests. The wire
     // numbering is checked against packetTypes here rather than trusted, and registration
     // is refused on a collision so an upstream message can never be dispatched into it.
-    auto viewport_registration = meow::viewport::map_request_handler(*server, packetTypes, std::size(packetTypes), send_viewport);
+    auto viewport_registration = meow::viewport::map_request_handler(*server, packetTypes, std::size(packetTypes), send_viewport, meow::viewport::following_enabled());
     BOOST_LOG(info) << viewport_registration.note;
     if (!viewport_registration.warning.empty()) {
       BOOST_LOG(error) << viewport_registration.warning;
@@ -1360,6 +1360,15 @@ namespace stream {
 
             session->controlEnd.raise(true);
             continue;
+          }
+
+          // MEOW-TOUCH(viewport): tell the client when the host dropped its crop on its
+          // own (encoder reinit, display mode change). Without this the client keeps its
+          // local zoom reset to 1:1 and is shown the whole desktop with no way to know.
+          if (session->control.peer) {
+            if (const auto revocation = meow::viewport::take_revocation_echo()) {
+              send_viewport(session, *revocation);
+            }
           }
 
           // Remember if we have a session that's waiting for a peer to connect to the

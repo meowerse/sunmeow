@@ -585,9 +585,21 @@ namespace meow::viewport {
    * The two extra `uint16`s are what make the whole coordinate question decidable at the
    * other end: with the negotiated stream resolution (which the client already has) and
    * the captured desktop size, the client can compute the host's `min()` scalar and
-   * padding offsets itself. `flag_desktop_extent` announces them. An existing client reads
-   * the first ten bytes, ignores the flag it does not know and the four bytes it does not
-   * expect, and behaves exactly as before -- no version bump, no break.
+   * padding offsets itself. `flag_desktop_extent` announces them.
+   *
+   * **Verified against the client, not assumed.** In `src/ControlStream.c` on branch `meow`
+   * of `meowerse/moonlight-common-c`, `handleAsyncCallback()` sizes its byte buffer from the
+   * *received packet length*, not from an expected payload size:
+   *
+   * ```c
+   * BbInitializeWrappedBuffer(&bb, (char*)ctlHdr, sizeof(*ctlHdr),
+   *                           packetLength - sizeof(*ctlHdr), BYTE_ORDER_LITTLE);
+   * ```
+   *
+   * The `IDX_VIEWPORT` branch then performs exactly six `BbGet` calls totalling ten bytes,
+   * checks only `version` and a non-zero extent, and explicitly discards the flags byte with
+   * `(void)flags;`. There is no exact-length check and no unknown-flag rejection, so a
+   * fourteen-byte payload is read as ten and the tail is ignored. No version bump, no break.
    *
    * @param applied_in_reference Applied rectangle, in reference-frame pixels.
    * @param capture_width Width of the captured desktop in pixels.
@@ -611,6 +623,17 @@ namespace meow::viewport {
    * @brief What to do about a viewport packet that just arrived.
    */
   struct request_outcome_t {
+    /**
+     * @brief Whether the message was understood at all.
+     *
+     * `false` means "change nothing": do not touch the applied rectangle and do not answer.
+     * A message we could not parse carries no cancellation semantics, so treating it as
+     * "no viewport" would let one corrupted packet — or one packet from a future client
+     * speaking a version we reject — silently throw away the user's zoom. "Stop cropping"
+     * has its own representation: a rectangle covering the whole encoded frame.
+     */
+    bool understood {};
+
     /**
      * @brief Rectangle to echo to the client, in **reference-frame** pixels.
      *
@@ -651,13 +674,19 @@ namespace meow::viewport {
    */
   [[nodiscard]] inline request_outcome_t evaluate_request(const std::string_view payload, const int capture_width, const int capture_height, const int surface_width, const int surface_height) noexcept {
     const auto in_frame = parse_payload(payload);
-    const auto requested = in_frame ? to_desktop(*in_frame, capture_width, capture_height, surface_width, surface_height) : std::nullopt;
+    if (!in_frame) {
+      // Truncated, wrong version, or a degenerate rectangle. Ignore it entirely rather than
+      // reading it as a request to stop cropping.
+      return {};
+    }
+
+    const auto requested = to_desktop(*in_frame, capture_width, capture_height, surface_width, surface_height);
     const auto applied = plan(capture_width, capture_height, surface_width, surface_height, requested);
     if (applied.source.width <= 0 || applied.source.height <= 0) {
       // Degenerate capture or surface size; there is nothing truthful to report.
       return {};
     }
-    return {to_reference(applied.source, capture_width, capture_height, surface_width, surface_height), applied.cropped ? requested : std::nullopt};
+    return {true, to_reference(applied.source, capture_width, capture_height, surface_width, surface_height), applied.cropped ? requested : std::nullopt};
   }
 
   /**
