@@ -97,10 +97,26 @@ jobs:
       # `third-party/build-deps` alone is 362 MB (nine platforms' prebuilt FFmpeg;
       # this job reads only `dist/Linux-x86_64`).
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           filter: blob:none
+
+      # Checkout is now the largest single step (161s of a 237s run once ccache
+      # is warm). Before optimising it further, measure where that time goes:
+      # 400 MB over a runner's network is a few seconds, so this is git overhead
+      # (16 separate submodule clones), not bandwidth. This step is cheap and
+      # tells the next change what to actually cut.
+      - name: Report checkout cost
+        run: |
+          echo "## Checkout cost" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "main .git:  $(du -sh .git 2>/dev/null | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "worktree:   $(du -sh --exclude=.git . 2>/dev/null | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "submodules: $(git submodule status --recursive 2>/dev/null | wc -l)" >> "$GITHUB_STEP_SUMMARY"
+          git submodule --quiet foreach --recursive             'echo "  $(du -sh --exclude=.git . 2>/dev/null | cut -f1)  $displaypath"'             2>/dev/null | sort -rh | head -12 >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat "$GITHUB_STEP_SUMMARY"
 
       # The container runs as a different uid than the checkout owner, so git
       # refuses to touch the tree ("detected dubious ownership") and the
@@ -114,7 +130,7 @@ jobs:
       # source* — by far the slowest part of a cold build. Caching it is the
       # single biggest speed win available here.
       - name: Cache CMake dependency builds
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             build/_deps
@@ -123,7 +139,7 @@ jobs:
             deps-${{ runner.os }}-
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
           key: ccache-${{ runner.os }}-${{ github.sha }}
