@@ -47,9 +47,33 @@ dependency, and both of which are unit tested without hardware.
 | `src_assets/common/assets/web/public/assets/locale/en.json` | (no marker — JSON) | Six strings total, from two features. `adaptive-bitrate`: Four strings (label + description for each setting). Required by the same consistency test. English only, per the upstream rule in `AGENTS.md`. `viewport`: Two strings, label and description, inserted in the existing alphabetical order. Required by `ConfigConsistencyTest.AllConfigOptionsExistInAllFiles`. | 2026-08-25 |
 | `docs/configuration.md` | (no marker — prose only) | Documents the reserved `output_name = all` value next to the existing `output_name` description, and (2026-08-25) adds the `meow_viewport_following` section after it. A separate page would leave the settings undocumented where users actually look, and the consistency test requires this one to be here. `adaptive-bitrate` additionally documents `adaptive_bitrate_min` and `adaptive_bitrate_max` next to the existing `max_bitrate`, which is where a user comparing the two will look. `tests/integration/test_config_consistency.cpp` requires every option in `config.cpp` to appear here, in `config.html` and in `en.json`, **in the same order within a section** — so these are a hard requirement of the gate, not a choice. | 2026-08-25 |
 
-Every deletion count against these files is still `0` — the edits are additive, and the
-geometry and policy they hook into live in `src/meow/display_union.h`, unit tested without
-hardware.
+The edits are additive, and the geometry and policy they hook into live in
+`src/meow/display_union.h`, unit tested without hardware.
+
+**One accounted-for exception, so the check below does not cry wolf.**
+`src/platform/linux/kwingrab.cpp` reports **8 deletions**. No upstream content was removed:
+all eight are lines *modified in place*, which git necessarily counts as a delete plus an add.
+All eight, exactly:
+
+- three `wl_output` listener signatures that lost `[[maybe_unused]]` because the parameter is
+  now read — `on_output_geometry` (`transform`), `on_output_mode` (`refresh`), and
+  `on_output_scale` (all three arguments);
+- `on_output_scale`'s `// Currently unused` comment, which stopped being true;
+- the fall-back `if (!output || !out_params)`, which gained a `!region.valid &&` guard;
+- the `zkde_screencast_unstable_v1_stream_output(...)` call, moved unchanged into the `else`
+  of a new `region.valid` branch;
+- two `this->logical_width = 0;` / `logical_height = 0;` lines whose trailing comments were
+  rewritten.
+
+Verify rather than trust this list:
+
+```bash
+git diff $(git merge-base origin-upstream/master HEAD) HEAD -- src/platform/linux/kwingrab.cpp \
+  | grep -E '^-' | grep -v '^---'
+```
+
+Every deleted line must have a near-identical added line beside it. A deletion that stands
+alone is upstream content we removed, and is the thing this check exists to catch.
 
 Two upstream **non-source** files are appended to. Both are append-only (`0` deletions), so
 they cannot conflict except at the very end of the file, but they are upstream files and are
@@ -92,9 +116,10 @@ Run both **before every upstream sync** ([`CLAUDE.md` §4](../../CLAUDE.md)). Th
 now returns the `unified-desktop-capture` and `viewport` markers; reconcile them against the
 table above row by row. Any marker the table does not list is the bug.
 
-What matters in (2) is that **every deletion count is `0`** — we only ever add lines to
-upstream files. The insertion counts change with every edit to our own docs, so do not treat
-them as fixed; check the middle column:
+What matters in (2) is the **deletion** column — we add lines to upstream files and, where a
+line genuinely had to change, we replace it in place and account for it above. The insertion
+counts change with every edit to our own docs, so do not treat them as fixed; check the middle
+column, and treat any non-zero value as a question to answer, not automatically as a fault:
 
 ```
 1	0	.gitignore
@@ -124,7 +149,9 @@ them as fixed; check the middle column:
 ```
 
 A non-zero deletion count against `.gitignore` or `AGENTS.md` means someone removed upstream
-content — investigate before syncing.
+content — investigate before syncing. For source files, a non-zero count means *look*: either
+it is a modified line with its replacement beside it (fine, and it belongs in the table above),
+or it is a genuine removal (not fine). The count alone cannot tell you which.
 
 Check your remote names first — in this clone `upstream` is **Apollo**, not Sunshine:
 
