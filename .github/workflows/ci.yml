@@ -99,7 +99,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          submodules: recursive
+          # Submodules are initialised in the step below instead of here, so that
+          # third-party/build-deps can be checked out WITHOUT recursing. See there.
+          submodules: false
           filter: blob:none
 
       # The container runs as a different uid than the checkout owner, so git
@@ -108,6 +110,37 @@ jobs:
       # breaking version detection.
       - name: Trust the workspace
         run: git config --global --add safe.directory '*'
+
+      # `submodules: recursive` pulled 48 submodules totalling 1.6 GB. The measured
+      # breakdown (see the checkout-cost report below) is dominated by one subtree:
+      #
+      #     1.4G  third-party/build-deps
+      #     1.2G  third-party/build-deps/third-party/FFmpeg/AMF
+      #     112M  third-party/build-deps/third-party/FFmpeg/FFmpeg
+      #      40M  third-party/build-deps/third-party/FFmpeg/Vulkan-Headers
+      #      38M  third-party/build-deps/third-party/FFmpeg/SVT-AV1
+      #
+      # That is FFmpeg *source*, plus AMD's AMF SDK. This job never compiles FFmpeg:
+      # cmake/dependencies/common.cmake reads the *prebuilt* binaries from
+      # `build-deps/dist/${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}`. So build-deps
+      # is initialised non-recursively -- its own submodules are build inputs for
+      # producing those binaries upstream, not for consuming them here.
+      #
+      # Everything else keeps --recursive, because nested submodules there are real
+      # dependencies (tray and libvirtualhid each vendor lizardbyte-common).
+      #
+      # --jobs parallelises the clones, which is the other half of the cost: 48 separate
+      # fetches were being done one at a time.
+      - name: Initialise submodules
+        run: |
+          set -e
+          others=$(git config -f .gitmodules --get-regexp path \
+                   | awk '{print $2}' | grep -v '^third-party/build-deps$')
+          # shellcheck disable=SC2086
+          git submodule update --init --recursive --jobs "$(nproc)" -- $others
+          git submodule update --init --jobs "$(nproc)" -- third-party/build-deps
+          echo "initialised $(git submodule status --recursive | wc -l) submodules"
+          test -d third-party/build-deps/dist || { echo "::error::build-deps/dist missing"; exit 1; }
 
       # Checkout is now the largest single step (161s of a 237s run once ccache
       # is warm). Before optimising it further, measure where that time goes:
