@@ -24,6 +24,7 @@
 #include "entry_handler.h"
 #include "file_handler.h"
 #include "logging.h"
+#include "meow/adaptive_bitrate.h"  // MEOW-TOUCH(adaptive-bitrate): bounds validation
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "rtsp.h"
@@ -791,6 +792,8 @@ namespace config {
     },  // display_device
 
     0,  // max_bitrate
+    0,  // adaptive_bitrate_min (MEOW-TOUCH(adaptive-bitrate): 0 = adaptation off, today's behaviour)
+    0,  // adaptive_bitrate_max (MEOW-TOUCH(adaptive-bitrate): 0 = use the effective ceiling)
     0  // minimum_fps_target (0 = framerate)
   };
 
@@ -1686,6 +1689,12 @@ namespace config {
     }
 
     int_f(vars, "max_bitrate", video.max_bitrate);
+    int_f(vars, "adaptive_bitrate_min", video.adaptive_bitrate_min);
+    int_f(vars, "adaptive_bitrate_max", video.adaptive_bitrate_max);
+    // MEOW-TOUCH(adaptive-bitrate): correct impossible bounds loudly instead of honouring them.
+    if (std::string adaptive_bitrate_warning; !meow::adaptive_bitrate::validate_config(video.adaptive_bitrate_min, video.adaptive_bitrate_max, adaptive_bitrate_warning) && !adaptive_bitrate_warning.empty()) {
+      BOOST_LOG(warning) << "config: "sv << adaptive_bitrate_warning;
+    }
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
 
     path_f(vars, "pkey", nvhttp.pkey);

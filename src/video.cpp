@@ -31,6 +31,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "meow/adaptive_bitrate_encoder.h"  // MEOW-TOUCH(adaptive-bitrate): live bitrate governor
 #include "nvenc/nvenc_encoder.h"
 #include "platform/common.h"
 #include "sync.h"
@@ -2360,6 +2361,11 @@ namespace video {
       return;
     }
 
+    // MEOW-TOUCH(adaptive-bitrate): drive the live encoder bitrate from client loss reports.
+    // All policy lives in src/meow/; this only hands over the codec context to write to.
+    auto *ab_avcodec = dynamic_cast<avcodec_encode_session_t *>(session.get());
+    meow::adaptive_bitrate::governor_t ab_governor {mail, ab_avcodec ? ab_avcodec->avcodec_ctx.get() : nullptr, ab_avcodec ? ab_avcodec->avcodec_ctx->codec->name : "", config.bitrate, config::video.max_bitrate, config::video.adaptive_bitrate_min, config::video.adaptive_bitrate_max};
+
     // As a workaround for NVENC hangs and to generally speed up encoder reinit,
     // we will complete the encoder teardown in a separate thread if supported.
     // This will move expensive processing off the encoder thread to allow us
@@ -2444,6 +2450,8 @@ namespace video {
       if (shutdown_event->peek() || !images->running() || (reinit_event.peek() && frame_nr > 1)) {
         break;
       }
+
+      ab_governor.tick();  // MEOW-TOUCH(adaptive-bitrate)
 
       if (encode(frame_nr++, *session, packets, channel_data, frame_timestamp)) {
         BOOST_LOG(error) << "Could not encode video packet"sv;

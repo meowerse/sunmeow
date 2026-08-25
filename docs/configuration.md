@@ -1456,6 +1456,76 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### adaptive_bitrate_min
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The lowest bitrate (in Kbps) that adaptive bitrate may fall back to when the network is losing packets.
+            Setting this to a non-zero value is what turns adaptive bitrate on; it is off by default, so an existing
+            installation behaves exactly as before until you opt in.
+            <br><br>
+            When enabled, Sunshine watches the per-frame loss reports the client already sends and moves the encoder
+            bitrate inside <code>[adaptive_bitrate_min, effective ceiling]</code>. The effective ceiling is the
+            smallest of the bitrate Moonlight requested, \ref max_bitrate, and \ref adaptive_bitrate_max — adaptive
+            bitrate never raises a stream above what the client asked for.
+            <br><br>
+            If Moonlight requests <em>less</em> than this minimum, the client's request wins: the range collapses,
+            adaptive bitrate disables itself for that session and logs that it did so. The minimum can never be used
+            to push a stream above the client's request.
+            <br><br>
+            Values below 500 are clamped to 500 with a warning, and a minimum that is not below
+            \ref adaptive_bitrate_max disables the feature with a warning rather than being silently reinterpreted.
+            <br><br>
+            @note{Only NVENC applies a bitrate change to a running encoder. On any other encoder Sunshine logs that
+            adaptive bitrate is unavailable and leaves the bitrate fixed. Each change costs one keyframe, so changes
+            are deliberately rare: loss must persist for several seconds before Sunshine backs off, and the link must
+            stay clean for substantially longer before it climbs back.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            adaptive_bitrate_min = 3000
+            @endcode</td>
+    </tr>
+</table>
+
+### adaptive_bitrate_max
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The highest bitrate (in Kbps) that adaptive bitrate may climb to. A value of 0 means "use the effective
+            ceiling", i.e. the smaller of the bitrate Moonlight requested and \ref max_bitrate.
+            <br><br>
+            This has no effect on its own — without \ref adaptive_bitrate_min the feature stays off, and Sunshine
+            logs a warning saying so. It is also never able to raise a stream: the client's requested bitrate and
+            \ref max_bitrate both still apply as hard limits.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            adaptive_bitrate_max = 8000
+            @endcode</td>
+    </tr>
+</table>
+
 ### minimum_fps_target
 
 <table>

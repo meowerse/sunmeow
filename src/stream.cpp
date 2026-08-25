@@ -25,6 +25,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
+#include "meow/adaptive_bitrate.h"  // MEOW-TOUCH(adaptive-bitrate): loss-report parsing
 #include "network.h"
 #include "platform/common.h"
 #include "process.h"
@@ -1134,6 +1135,17 @@ namespace stream {
         << "time in milli since last report [" << t.count() << ']' << std::endl
         << "last good frame [" << lastGoodFrame << ']' << std::endl
         << "---end stats---";
+    });
+
+    // MEOW-TOUCH(adaptive-bitrate): inbound 0x5502 is the client's SS_FRAME_FEC_STATUS report -
+    // the only loss signal a Sunshine host actually receives. IDX_LOSS_STATS above is never sent
+    // by a client talking to Sunshine (see src/meow/adaptive_bitrate.h for the evidence), and it
+    // was previously dropped as an unknown type. Validation and all control logic live in
+    // src/meow/, so this hook only forwards a validated sample to the encoder thread.
+    server->map(meow::adaptive_bitrate::frame_fec_status_packet_type, [&](session_t *session, const std::string_view &payload) {
+      if (const auto sample = meow::adaptive_bitrate::parse_frame_fec_status(payload)) {
+        session->mail->queue<meow::adaptive_bitrate::loss_sample_t>(meow::adaptive_bitrate::mail_id)->raise(*sample);
+      }
     });
 
     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
