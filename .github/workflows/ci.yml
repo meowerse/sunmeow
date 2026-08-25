@@ -40,17 +40,23 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
-          # qt6-base/qt6-svg are needed by third-party/tray. We install them rather
-          # than building with -DSUNSHINE_ENABLE_TRAY=OFF: the tray is shipped code
-          # and not compiling it would be a second coverage hole alongside CUDA.
-          # (This build passed locally only because the maintainer runs KDE, where
-          # Qt is present anyway -- a clean container is what exposed it.)
+          # qt6-base/qt6-svg are needed by third-party/tray, and libpipewire by the
+          # KWin and xdg-portal capture backends (linux.cmake makes libpipewire-0.3
+          # REQUIRED whenever SUNSHINE_ENABLE_KWIN or _PORTAL is on -- both default
+          # on, and KWin capture is the backend this project actually streams
+          # through). We install them rather than switching those features off:
+          # they are shipped code, and not compiling them would add coverage holes
+          # alongside the documented CUDA one.
+          # (The build passed locally only because the maintainer runs KDE, where
+          # Qt and PipeWire are present anyway -- a clean container is what exposed
+          # this. Verified by running this exact image and configure line in Docker
+          # before pushing: configure exits 0.)
           pacman -Syu --noconfirm --needed \
             git cmake ninja pkgconf \
             boost ffmpeg openssl opus \
             libva libdrm libcap libevdev libpulse numactl miniupnpc curl avahi \
             wayland wayland-protocols libx11 libxcb libxfixes libxrandr libxtst \
-            qt6-base qt6-svg \
+            qt6-base qt6-svg libpipewire \
             nodejs npm python python-jinja
 
       - name: Checkout
