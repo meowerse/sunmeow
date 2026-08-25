@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -1920,8 +1922,55 @@ TEST(MeowViewportRegistration, RefusesToStealAnUpstreamPacketNumber) {
  * — telling a user who had just enabled the feature that the setting does not exist. This
  * pins the registration by driving the real parser.
  */
-TEST(MeowViewportConfig, KeyIsRegisteredWithSunshinesOwnParser) {
-  const auto saved = config::video.viewport_following;
+/**
+ * @brief Fixture for the tests that drive Sunshine's real config machinery.
+ *
+ * `config::apply_config_for_test()` runs the full `apply_config()`, which touches the
+ * filesystem (it seeds a default `apps.json` under the user's config directory). A bare
+ * `TEST()` does none of the environment preparation that needs, so on a clean CI container
+ * it threw `filesystem error: cannot copy file: No such file or directory`, while passing
+ * on a developer machine where the directory already existed. `BaseTest` is what prepares
+ * that environment, and it is what `tests/unit/test_video.cpp` already uses for the same
+ * helper -- this follows the established pattern rather than inventing a second one.
+ */
+struct MeowViewportConfigTest: BaseTest {
+  void SetUp() override {
+    BaseTest::SetUp();
+    // `apply_config()` seeds a default apps.json when `stream.file_apps` does not exist
+    // (src/config.cpp:1751-1752). That copy cannot succeed here: its source,
+    // SUNSHINE_ASSETS_DIR "/apps.json", is not present in the test build tree.
+    //
+    // Before this fixture the test passed only because `stream.file_apps` resolved to the
+    // developer's own ~/.config/sunshine/apps.json, which exists -- so `fs::exists` was
+    // true and the copy was skipped. On a clean CI container there is no such file, the
+    // copy ran, and it threw. The test was reading the machine's real configuration and
+    // calling that a pass.
+    //
+    // So: own the file outright. Point `file_apps` at a path this fixture creates, which
+    // makes the copy unreachable, keeps the test off the user's real config, and makes it
+    // behave identically on a developer box and an empty container.
+    temp_dir = std::filesystem::temp_directory_path() / "meow_viewport_config_test";
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directories(temp_dir);
+    const auto apps = temp_dir / "apps.json";
+    std::ofstream {apps} << R"({"env":{},"apps":[]})";
+    config::stream.file_apps = apps.string();
+  }
+
+  void TearDown() override {
+    config::video = original_video;
+    config::stream = original_stream;
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    BaseTest::TearDown();
+  }
+
+  std::filesystem::path temp_dir;  ///< Owned by this test; removed in TearDown.
+  config::video_t original_video {config::video};  ///< Restored after each test.
+  config::stream_t original_stream {config::stream};  ///< Restored after each test.
+};
+
+TEST_F(MeowViewportConfigTest, KeyIsRegisteredWithSunshinesOwnParser) {
 
   // The key must reach `config::video` through Sunshine's own parser, not a private read.
   config::video.viewport_following = false;
@@ -1949,8 +1998,6 @@ TEST(MeowViewportConfig, KeyIsRegisteredWithSunshinesOwnParser) {
   config::video.viewport_following = false;
   config::apply_config_for_test("min_threads = 2\n");
   EXPECT_FALSE(meow::viewport::following_enabled());
-
-  config::video.viewport_following = saved;
 }
 
 /**
