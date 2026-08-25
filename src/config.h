@@ -204,6 +204,9 @@ namespace config {
     } dd;  ///< Display-device integration settings.
 
     int max_bitrate;  ///< Maximum bitrate ceiling in kbps for bitrate requested from the client.
+    // MEOW-TOUCH(adaptive-bitrate): bounds for the runtime bitrate controller in src/meow/adaptive_bitrate.h.
+    int adaptive_bitrate_min;  ///< Lowest kbps adaptive bitrate may fall to. 0 disables adaptation entirely.
+    int adaptive_bitrate_max;  ///< Highest kbps adaptive bitrate may rise to. 0 means "use the effective ceiling".
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
   };
 
