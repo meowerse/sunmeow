@@ -52,7 +52,7 @@ jobs:
           # this. Verified by running this exact image and configure line in Docker
           # before pushing: configure exits 0.)
           pacman -Syu --noconfirm --needed \
-            git cmake ninja pkgconf \
+            git cmake ninja pkgconf ccache \
             boost ffmpeg openssl opus \
             libva libdrm libcap libevdev libpulse numactl miniupnpc curl avahi \
             wayland wayland-protocols libx11 libxcb libxfixes libxrandr libxtst \
