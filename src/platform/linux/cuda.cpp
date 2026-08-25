@@ -22,6 +22,8 @@ extern "C" {
 #include "cuda.h"
 #include "graphics.h"
 #include "src/logging.h"
+#include "src/meow/viewport_cuda.h"  // MEOW-TOUCH(viewport-cuda): crop geometry for the CUDA scaler
+#include "src/meow/viewport_runtime.h"  // MEOW-TOUCH(viewport-cuda): per-frame viewport state
 #include "src/utility.h"
 #include "src/video.h"
 #include "wayland.h"
@@ -222,7 +224,133 @@ namespace cuda {
 
       linear_interpolation = width != frame->width || height != frame->height;
 
+      // MEOW-TOUCH(viewport-cuda): claim the viewport state for this scaler and prepare the
+      // one resource cropping needs. Never fails the session: on any problem the feature
+      // stays off and this device keeps streaming the full desktop.
+      meow_viewport_init();
+
       return 0;
+    }
+
+    /**
+     * @brief MEOW-TOUCH(viewport-cuda): arm viewport following for this scaler.
+     *
+     * Runs once per `set_frame()`. Three things happen here and nothing else:
+     *
+     *  1. the uncropped configuration is *read back* from the `sws_t` upstream just
+     *     constructed, so a frame with no crop is bit-identical to today's -- recomputing it
+     *     from `meow::viewport::full_frame_plan()` would differ by a pixel for some sizes,
+     *     because upstream halves the letterbox in float and that formula halves it in int;
+     *  2. a 2x2 all-black texture is created. `cudaAddressModeClamp` means *any* coordinate
+     *     reads black from it, so re-running the ordinary conversion kernel against it over
+     *     the whole surface produces exactly the black `apply_colorspace()` writes -- with no
+     *     copy of the colour-matrix arithmetic on the host to drift out of sync;
+     *  3. the scaler's geometry is published, which is what lets the control thread answer a
+     *     viewport request at all and what drops any rectangle left over from a previous
+     *     session, display mode or encoder reinit.
+     *
+     * Gated on the configuration so a host that never opted in allocates nothing, publishes
+     * nothing and answers nothing -- the feature is inert rather than merely quiet. (The
+     * software path in `src/video.cpp` publishes unconditionally and relies on the gate inside
+     * `on_request()` instead; both are correct, this one is quieter.)
+     *
+     * Every path that does *not* arm cropping calls `reset()` on the way out, and that is
+     * load-bearing rather than tidy. The viewport state is process-wide: without it, a scaler
+     * that failed to arm would leave a *previous* session's `geometry` and `accepting` in
+     * place, and the control thread would answer the client's next viewport packet against
+     * that stale geometry. The client resets its local zoom to 1:1 on the strength of an echo
+     * -- so it would then be shown the full desktop at 1:1 with no way to tell. Answering
+     * nothing is strictly better than answering wrongly.
+     */
+    void meow_viewport_init() {
+      meow_viewport_ready = false;
+      if (!meow::viewport::following_enabled()) {
+        meow::viewport::reset();
+        return;
+      }
+
+      meow_viewport_baseline = meow::viewport::cuda_baseline({sws.viewport.width, sws.viewport.height, sws.viewport.offsetX, sws.viewport.offsetY}, sws.scale);
+      meow_viewport_base_linear = linear_interpolation;
+
+      // `tex_t::make`'s second parameter is named `pitch` and every upstream call passes
+      // bytes (`width * 4`), but `cudaMallocArray` takes a width in *elements* -- so those
+      // calls over-allocate 4x and leave the tail texels uninitialised. Two elements is
+      // exactly the 8 bytes per row `load_ram` writes below, which matters here and not
+      // upstream: `cudaAddressModeClamp` means the blanking pass samples the far corner of
+      // this array for most of the surface, so every texel in it has to be one we wrote.
+      auto blank = tex_t::make(2, 2);
+      if (!blank) {
+        BOOST_LOG(warning) << "meow viewport: couldn't allocate the blanking texture; the CUDA scaler will not crop"sv;
+        meow::viewport::reset();
+        return;
+      }
+
+      std::uint8_t black[2 * 2 * 4] {};
+      platf::img_t black_img;
+      black_img.data = black;
+      black_img.width = 2;
+      black_img.height = 2;
+      black_img.pixel_pitch = 4;
+      black_img.row_pitch = 2 * 4;
+      if (sws.load_ram(black_img, blank->array)) {
+        BOOST_LOG(warning) << "meow viewport: couldn't fill the blanking texture; the CUDA scaler will not crop"sv;
+        meow::viewport::reset();
+        return;
+      }
+
+      meow_viewport_blank = std::move(*blank);
+      meow_viewport_ready = true;
+
+      meow::viewport::on_scaler_init(this, width, height, frame->width, frame->height);
+    }
+
+    /**
+     * @brief MEOW-TOUCH(viewport-cuda): re-aim the scaler at the rectangle the client is showing.
+     *
+     * Called at the top of every `convert()`. All geometry, validation and policy live in
+     * `src/meow/viewport_cuda.h`; this only assigns the result and deals with the one
+     * consequence a GPU scaler has that swscale does not.
+     *
+     * That consequence is the blanking. When the destination rectangle shrinks -- which it
+     * does on the very first crop, because a 3.7:1 desktop letterboxes to a thin strip while
+     * a phone-shaped crop fills the surface -- the kernel stops writing the region the
+     * previous rectangle covered, and that region keeps the previous frame's desktop pixels.
+     * So the surface is re-blackened, on the same stream and therefore ordered ahead of the
+     * conversion, but *only* when the rectangle actually moved: a steady-state frame and a
+     * pan (same size, new origin) both cost four integer comparisons and no launch.
+     *
+     * @param img Captured frame about to be converted.
+     * @return 0 on success; -1 when the blanking launch failed.
+     */
+    int meow_viewport_apply(platf::img_t &img) {
+      if (!meow_viewport_ready) {
+        return 0;
+      }
+
+      const auto planned = meow::viewport::plan_for_frame(this, img.width, img.height, frame->width, frame->height);
+      // `plan_for_frame()` documents `std::nullopt` as "do not touch this scaler", and the
+      // software path honours that literally. This path deliberately reads it as "revert to
+      // the uncropped baseline" instead, because `cuda_scaler_config()` maps it there. The
+      // only way to get it is to have been displaced as owner by a newer session
+      // (`channels > 1`, off by default), and a displaced scaler showing the full desktop is
+      // a better outcome than one frozen on a crop the client has stopped steering.
+      //
+      // Clamp against the smaller of the texture we allocated and the frame in hand, so the
+      // kernel cannot sample rows or columns that were never uploaded.
+      const auto config = meow::viewport::cuda_scaler_config(planned, meow_viewport_baseline, std::min(width, img.width), std::min(height, img.height), frame->width, frame->height);
+
+      // A crop always magnifies, so point sampling would alias even on a capture whose size
+      // matches the encode surface and therefore needed no filtering uncropped.
+      linear_interpolation = meow_viewport_base_linear || config.cropped;
+
+      if (!meow::viewport::apply_cuda_scaler(config, sws.viewport, sws.source)) {
+        return 0;
+      }
+
+      if (is_yuv444) {
+        return sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], meow_viewport_blank.texture.point, stream.get(), {frame->width, frame->height, 0, 0});
+      }
+      return sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], meow_viewport_blank.texture.point, stream.get(), {frame->width, frame->height, 0, 0});
     }
 
     /**
@@ -253,6 +381,11 @@ namespace cuda {
         return;
       }
 
+      // MEOW-TOUCH(viewport-cuda): these overloads read the member `sws.source`, which a crop
+      // overwrites. Two independent facts keep that harmless: `tex` here is a zero-filled
+      // array under `cudaAddressModeClamp`, so every sample is black whatever the source map
+      // says; and `video.cpp` calls this exactly once, straight after `set_frame()`, where
+      // `source` is still the baseline. Both are load-bearing -- do not move this call.
       if (is_yuv444) {
         sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex->texture.linear, stream.get(), {frame->width, frame->height, 0, 0});
       } else {
@@ -282,6 +415,11 @@ namespace cuda {
     bool is_yuv444;  ///< Whether the CUDA converter outputs YUV 4:4:4.
 
     sws_t sws;  ///< Software scaler used for CUDA frame conversion fallback paths.
+
+    meow::viewport::cuda_scaler_t meow_viewport_baseline {};  ///< MEOW-TOUCH(viewport-cuda): uncropped configuration, read back from `sws`.
+    tex_t meow_viewport_blank;  ///< MEOW-TOUCH(viewport-cuda): 2x2 all-black texture used to clear the surface.
+    bool meow_viewport_ready {};  ///< MEOW-TOUCH(viewport-cuda): whether cropping is armed for this scaler.
+    bool meow_viewport_base_linear {};  ///< MEOW-TOUCH(viewport-cuda): `linear_interpolation` as upstream computed it.
   };
 
   /**
@@ -296,6 +434,11 @@ namespace cuda {
      * @return Conversion status.
      */
     int convert(platf::img_t &img) override {
+      // MEOW-TOUCH(viewport-cuda): crop to the rectangle the client is displaying before
+      // scaling into the encoder. See cuda_t::meow_viewport_apply().
+      if (meow_viewport_apply(img)) {
+        return -1;
+      }
       if (is_yuv444) {
         return sws.load_ram(img, tex.array) || sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(tex), stream.get());
       }
@@ -339,6 +482,11 @@ namespace cuda {
      * @return Conversion status.
      */
     int convert(platf::img_t &img) override {
+      // MEOW-TOUCH(viewport-cuda): crop to the rectangle the client is displaying before
+      // scaling into the encoder. See cuda_t::meow_viewport_apply().
+      if (meow_viewport_apply(img)) {
+        return -1;
+      }
       if (is_yuv444) {
         return sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(((img_t *) &img)->tex), stream.get());
       }
