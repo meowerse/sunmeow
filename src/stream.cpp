@@ -26,6 +26,7 @@ extern "C" {
 #include "input.h"
 #include "logging.h"
 #include "meow/adaptive_bitrate.h"  // MEOW-TOUCH(adaptive-bitrate): loss-report parsing
+#include "meow/viewport_runtime.h"  // MEOW-TOUCH(viewport): crop geometry, wire format and session state
 #include "network.h"
 #include "platform/common.h"
 #include "process.h"
@@ -268,6 +269,19 @@ namespace stream {
 
     // Sunshine protocol extension
     SS_HDR_METADATA metadata;  ///< HDR10 metadata sent with the control message.
+  };
+
+  /**
+   * @brief MEOW-TOUCH(viewport): control payload echoing the applied viewport rectangle.
+   *
+   * Layout is fixed by the client and asserted in `src/meow/viewport.h`; the bytes are
+   * written by `meow::viewport::write_payload()` so there is exactly one definition of the
+   * wire format. Declared here rather than in `src/meow/` because `control_header_v2` and
+   * the `#pragma pack(1)` region around it are private to this file.
+   */
+  struct control_viewport_t {
+    control_header_v2 header;  ///< Control message header preceding this payload.
+    std::uint8_t payload[meow::viewport::echo_payload_length];  ///< Serialized viewport rectangle and desktop size.
   };
 
   /**
@@ -1068,6 +1082,51 @@ namespace stream {
   }
 
   /**
+   * @brief MEOW-TOUCH(viewport): echo the applied viewport rectangle back to the client.
+   *
+   * The host regularly applies something other than what was asked for -- the rectangle is
+   * clamped to the desktop, grown to a minimum size, even-aligned for chroma, or refused
+   * outright when its aspect ratio would scale to a sliver. Without this the client would
+   * show the crop *under its own local zoom*, magnified twice, so this is load-bearing
+   * rather than informational: it is what lets the client reset to 1:1 once a crop lands.
+   * The applied rectangle is reported in the coordinate system the request arrived in, and
+   * is reported even when what was applied is the whole desktop.
+   *
+   * Modelled on send_hdr_mode() below; the framing, the encryption and the peer lookup are
+   * all private to this file, which is why this cannot live in `src/meow/`.
+   *
+   * @param session Active streaming session.
+   * @param echo Applied rectangle in the client's own coordinate system, plus the captured
+   *        desktop size so the client can derive the host's padding transform.
+   * @return 0 when the control message is queued; nonzero when no control peer is ready.
+   */
+  int send_viewport(session_t *session, const meow::viewport::echo_t &echo) {
+    if (!session->control.peer) {
+      // Still waiting for PING from Moonlight.
+      return -1;
+    }
+
+    control_viewport_t plaintext {};
+    plaintext.header.type = meow::viewport::control_packet_type;
+    plaintext.header.payloadLength = sizeof(control_viewport_t) - sizeof(control_header_v2);
+    meow::viewport::write_echo_payload(echo.applied, echo.capture_width, echo.capture_height, plaintext.payload);
+
+    std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+      encrypted_payload;
+
+    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+      TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
+      BOOST_LOG(warning) << "Couldn't send viewport echo to ["sv << addr << ':' << port << ']';
+      return -1;
+    }
+
+    BOOST_LOG(debug) << "Applied viewport (stream coordinates): "sv << echo.applied.width << 'x' << echo.applied.height << '+' << echo.applied.x << '+' << echo.applied.y
+                     << " of desktop "sv << echo.capture_width << 'x' << echo.capture_height;
+    return 0;
+  }
+
+  /**
    * @brief Send the selected HDR mode to the connected client over the control channel.
    *
    * @param session Active streaming or pairing session for the request.
@@ -1109,6 +1168,15 @@ namespace stream {
    * @param server RTSP server instance handling the request.
    */
   void controlBroadcastThread(control_server_t *server) {
+    // MEOW-TOUCH(viewport): viewport ("foveated streaming") crop requests. The wire
+    // numbering is checked against packetTypes here rather than trusted, and registration
+    // is refused on a collision so an upstream message can never be dispatched into it.
+    auto viewport_registration = meow::viewport::map_request_handler(*server, packetTypes, std::size(packetTypes), send_viewport, meow::viewport::following_enabled());
+    BOOST_LOG(info) << viewport_registration.note;
+    if (!viewport_registration.warning.empty()) {
+      BOOST_LOG(error) << viewport_registration.warning;
+    }
+
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
     });
@@ -1316,6 +1384,15 @@ namespace stream {
             continue;
           }
 
+          // MEOW-TOUCH(viewport): tell the client when the host dropped its crop on its
+          // own (encoder reinit, display mode change). Without this the client keeps its
+          // local zoom reset to 1:1 and is shown the whole desktop with no way to know.
+          if (session->control.peer) {
+            if (const auto revocation = meow::viewport::take_revocation_echo()) {
+              send_viewport(session, *revocation);
+            }
+          }
+
           // Remember if we have a session that's waiting for a peer to connect to the
           // control stream. This ensures the clients are properly notified even when
           // the app terminates before they finish connecting.
@@ -1379,6 +1456,9 @@ namespace stream {
       session->shutdown_event->raise(true);
       session->controlEnd.raise(true);
     }
+
+    // MEOW-TOUCH(viewport): the session is over; forget its crop so it cannot leak forward.
+    meow::viewport::reset();
 
     server->flush();
   }
