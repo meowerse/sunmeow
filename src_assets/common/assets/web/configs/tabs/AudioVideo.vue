@@ -85,6 +85,14 @@ const config = ref(props.config)
       :config="config"
     />
 
+    <!-- MEOW-TOUCH(viewport): crop to the client's viewport before scaling -->
+    <Checkbox class="mb-3"
+              id="meow_viewport_following"
+              locale-prefix="config"
+              v-model="config.meow_viewport_following"
+              default="false"
+    ></Checkbox>
+
     <DisplayDeviceOptions
       :platform="platform"
       :config="config"

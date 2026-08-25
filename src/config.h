@@ -122,6 +122,7 @@ namespace config {
     std::string encoder;  ///< Encoder backend name selected by configuration.
     std::string adapter_name;  ///< Display adapter name selected in configuration.
     std::string output_name;  ///< Display output name selected in configuration.
+    bool viewport_following;  ///< MEOW-TOUCH(viewport): honour client viewport crop requests. @see src/meow/viewport.h
 
     /**
      * @brief Display-device integration settings.
