@@ -102,6 +102,13 @@ jobs:
           submodules: recursive
           filter: blob:none
 
+      # The container runs as a different uid than the checkout owner, so git
+      # refuses to touch the tree ("detected dubious ownership") and the
+      # `rev-parse` calls in cmake/prep/build_version.cmake fail with error 128,
+      # breaking version detection.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory '*'
+
       # Checkout is now the largest single step (161s of a 237s run once ccache
       # is warm). Before optimising it further, measure where that time goes:
       # 400 MB over a runner's network is a few seconds, so this is git overhead
@@ -117,13 +124,6 @@ jobs:
           git submodule --quiet foreach --recursive             'echo "  $(du -sh --exclude=.git . 2>/dev/null | cut -f1)  $displaypath"'             2>/dev/null | sort -rh | head -12 >> "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
-
-      # The container runs as a different uid than the checkout owner, so git
-      # refuses to touch the tree ("detected dubious ownership") and the
-      # `rev-parse` calls in cmake/prep/build_version.cmake fail with error 128,
-      # breaking version detection.
-      - name: Trust the workspace
-        run: git config --global --add safe.directory '*'
 
       # Sunshine pins `find_package(Boost CONFIG 1.89.0 EXACT)`. Arch ships a
       # newer Boost, so CMake falls back to FetchContent and *builds Boost from
