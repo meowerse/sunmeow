@@ -29,12 +29,14 @@
 
 // generated protocol header
 #include <kde-output-order-v1.h>
+#include <xdg-output-unstable-v1.h>
 #include <zkde-screencast-unstable-v1.h>
 
 // local includes
 #include "cuda.h"
 #include "graphics.h"
 #include "pipewire.cpp"
+#include "src/meow/display_union.h"  // MEOW-TOUCH(unified-desktop-capture): pure union-of-outputs geometry
 #include "src/platform/common.h"
 #include "src/video.h"
 
@@ -243,6 +245,19 @@ namespace kwin {
     }
   };
 
+  // MEOW-TOUCH(unified-desktop-capture): `meow::display_union::output_transform_t` mirrors
+  // `enum wl_output_transform` so the pure geometry header needs no Wayland dependency and
+  // stays unit testable without a compositor. Pin the two together here — the one place that
+  // converts between them — so any drift is a compile error rather than a silent misrotation.
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::normal) == WL_OUTPUT_TRANSFORM_NORMAL);
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::rotate_90) == WL_OUTPUT_TRANSFORM_90);
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::rotate_180) == WL_OUTPUT_TRANSFORM_180);
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::rotate_270) == WL_OUTPUT_TRANSFORM_270);
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::flipped) == WL_OUTPUT_TRANSFORM_FLIPPED);
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::flipped_90) == WL_OUTPUT_TRANSFORM_FLIPPED_90);
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::flipped_180) == WL_OUTPUT_TRANSFORM_FLIPPED_180);
+  static_assert(static_cast<int32_t>(meow::display_union::output_transform_t::flipped_270) == WL_OUTPUT_TRANSFORM_FLIPPED_270);
+
   // Output parameters
   /**
    * @brief KWin screencast output name and geometry.
@@ -253,6 +268,22 @@ namespace kwin {
     int height = 0;  ///< Output height in pixels.
     int pos_x = 0;  ///< Output X position in the compositor layout.
     int pos_y = 0;  ///< Output Y position in the compositor layout.
+    // MEOW-TOUCH(unified-desktop-capture): logical geometry + scale + refresh, needed to
+    // build a stream_region request. `width`/`height` above are device pixels (wl_output
+    // mode); these are logical (xdg_output) and are the coordinate space stream_region uses.
+    int logical_width = 0;  ///< Logical width from xdg_output, 0 when unknown.
+    int logical_height = 0;  ///< Logical height from xdg_output, 0 when unknown.
+    // xdg_output's logical position is kept in its OWN fields and never written back over
+    // `pos_x`/`pos_y` above. Those become display_t::offset_x/offset_y, which pipewire.cpp
+    // matches for equality against wl::monitors(); mixing two sources there would silently
+    // break single-output capture. Only the union path reads these.
+    int xdg_logical_x = 0;  ///< Logical X from xdg_output.
+    int xdg_logical_y = 0;  ///< Logical Y from xdg_output.
+    bool has_xdg_position = false;  ///< True once xdg_output reported a logical position.
+    int transform = 0;  ///< wl_output transform; wl_output::mode is reported pre-transform.
+    int wl_scale = 1;  ///< Integer wl_output scale, fallback only when xdg_output is absent.
+    int refresh_mhz = 0;  ///< Current mode refresh rate in mHz.
+    bool is_union = false;  ///< True for the synthetic whole-desktop pseudo-output.
     // order is needed to get a sorted output list and should be updated before sorting to have current values
     /**
      * @brief Order.
@@ -284,6 +315,15 @@ namespace kwin {
       if (kde_output_order) {
         kde_output_order_v1_destroy(kde_output_order);
         kde_output_order = nullptr;
+      }
+      // MEOW-TOUCH(unified-desktop-capture): release the xdg-output objects we created.
+      for (auto *xdg_output : xdg_outputs | std::views::keys) {
+        zxdg_output_v1_destroy(xdg_output);
+      }
+      xdg_outputs.clear();
+      if (xdg_output_manager) {
+        zxdg_output_manager_v1_destroy(xdg_output_manager);
+        xdg_output_manager = nullptr;
       }
 
       // Clear output order list
@@ -339,10 +379,55 @@ namespace kwin {
       wl_registry_add_listener(wl_registry, &registry_listener, this);
       wl_display_roundtrip(wl_display);
 
+      // MEOW-TOUCH(unified-desktop-capture): xdg_output is the only source of logical
+      // geometry that stays correct under fractional scaling. The manager and the outputs
+      // arrive in the same registry burst, so the objects can only be created afterwards.
+      if (xdg_output_manager) {
+        for (auto *output : outputs | std::views::keys) {
+          auto *xdg_output = zxdg_output_manager_v1_get_xdg_output(xdg_output_manager, output);
+          xdg_outputs.emplace(xdg_output, outputs.at(output));
+          zxdg_output_v1_add_listener(xdg_output, &xdg_output_listener, this);
+        }
+      }
+
       // We need a second roundtrip after binding outputs to get wl_output events
       wl_display_roundtrip(wl_display);
 
+      // MEOW-TOUCH(unified-desktop-capture): a third roundtrip settles the xdg_output events
+      // requested above. Only needed when xdg-output actually exists.
+      if (xdg_output_manager) {
+        wl_display_roundtrip(wl_display);
+      }
+
       return 0;
+    }
+
+    /**
+     * @brief Describe every known output for the pure union-geometry helper.
+     * @return One entry per advertised wl_output.
+     */
+    std::vector<meow::display_union::output_geometry_t> collect_output_geometry() const {
+      std::vector<meow::display_union::output_geometry_t> geometry;
+      geometry.reserve(outputs.size());
+      for (const auto &params : outputs | std::views::values) {
+        meow::display_union::output_report_t report;
+        report.name = params->name;
+        report.wl_x = params->pos_x;
+        report.wl_y = params->pos_y;
+        report.mode_width = params->width;
+        report.mode_height = params->height;
+        report.transform = static_cast<meow::display_union::output_transform_t>(params->transform);
+        report.wl_scale = params->wl_scale;
+        report.refresh_mhz = params->refresh_mhz;
+        report.has_xdg_logical_position = params->has_xdg_position;
+        report.xdg_logical_x = params->xdg_logical_x;
+        report.xdg_logical_y = params->xdg_logical_y;
+        report.has_xdg_logical_size = params->logical_width > 0 && params->logical_height > 0;
+        report.xdg_logical_width = params->logical_width;
+        report.xdg_logical_height = params->logical_height;
+        geometry.emplace_back(meow::display_union::describe_output(report));
+      }
+      return geometry;
     }
 
     /**
@@ -370,6 +455,23 @@ namespace kwin {
       for (const auto &output_parameter : sorted_outputs) {
         BOOST_LOG(info) << "[kwingrab] Found output: "sv << output_parameter->name << " order: "sv << output_parameter->order << " position: "sv << output_parameter->pos_x << "x"sv << output_parameter->pos_y << " resolution: "sv << output_parameter->width << "x"sv << output_parameter->height;
         output_names.emplace_back(output_parameter->name);
+      }
+      // MEOW-TOUCH(unified-desktop-capture): advertise the whole-desktop pseudo-display, but
+      // last, so it can never become the implicit index-0 default. It is reachable two ways:
+      // by setting `output_name` in the config, and — like every other entry in this list —
+      // by a connected client pressing the display-switch hotkey (Ctrl+Alt+Shift+F1..F13),
+      // which `input.cpp` turns into a `mail::switch_display` index. `video.cpp` clamps that
+      // index into `[0, display_names.size() - 1]`, so the highest F-key selects whichever
+      // entry is last, which is this one. That is bounded and intended, not a way for a
+      // client to name an arbitrary output; it just means whole-desktop capture can be
+      // toggled from the couch. Skipped when there is nothing to unify, or when the
+      // compositor is too old for stream_region — in the latter case `start()` would only
+      // fall back to a single output anyway, so advertising it would be a lie.
+      if (!outputs.empty() && screencast_version_ >= meow::display_union::min_stream_region_version && std::ranges::none_of(output_names, [](const std::string &name) {
+            return meow::display_union::is_union_output_name(name);
+          })) {
+        output_names.emplace_back(meow::display_union::union_output_name);
+        BOOST_LOG(info) << "[kwingrab] Advertising whole-desktop pseudo-output: "sv << meow::display_union::union_output_name;
       }
       return output_names;
     }
@@ -407,8 +509,15 @@ namespace kwin {
           }
         }
       }
+      // MEOW-TOUCH(unified-desktop-capture): the reserved name streams every output as one
+      // region. Real outputs are resolved above first, so a real connector could never be
+      // shadowed by the reserved name. An unusable region falls through to single-output.
+      meow::display_union::union_region_t region;
+      if (!output && meow::display_union::is_union_output_name(output_name)) {
+        region = prepare_union_region();
+      }
       // Fall back to first element from the map in case of error
-      if (!output || !out_params) {
+      if (!region.valid && (!output || !out_params)) {
         const auto output_ = outputs.begin();
         output = output_->first;
         out_params = output_->second;
@@ -416,7 +525,12 @@ namespace kwin {
 
       // Request a stream for the chosen output with embedded cursor
       if (kde_screencast_v1_) {
-        kde_screencast_stream_v1_ = zkde_screencast_unstable_v1_stream_output(kde_screencast_v1_, output, ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED);
+        if (region.valid) {
+          // MEOW-TOUCH(unified-desktop-capture): stream_region takes LOGICAL coordinates.
+          kde_screencast_stream_v1_ = zkde_screencast_unstable_v1_stream_region(kde_screencast_v1_, region.x, region.y, static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height), wl_fixed_from_double(region.scale), ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED);
+        } else {
+          kde_screencast_stream_v1_ = zkde_screencast_unstable_v1_stream_output(kde_screencast_v1_, output, ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED);
+        }
         zkde_screencast_stream_unstable_v1_add_listener(kde_screencast_stream_v1_, &stream_listener, this);
       } else {
         // No screencast protocol found. Output an error based on newly initialized permission file.
@@ -463,6 +577,71 @@ namespace kwin {
       return 0;
     }
 
+    /**
+     * @brief MEOW-TOUCH(unified-desktop-capture): build the whole-desktop region request.
+     *
+     * Computes the bounding box of every advertised output in logical coordinates and
+     * installs a synthetic `output_parameter_t` describing it, so the rest of `start()` and
+     * `configure_stream()` need no special-casing beyond reading the logical size back out.
+     *
+     * @return The computed region; `valid` is false when region capture cannot be used and
+     *         the caller should fall back to single-output capture.
+     */
+    meow::display_union::union_region_t prepare_union_region() {
+      using meow::display_union::union_status_t;
+
+      const auto decision = meow::display_union::decide_union_capture(collect_output_geometry(), screencast_version_);
+      const auto &region = decision.region;
+
+      switch (decision.status) {
+        case union_status_t::unsupported_protocol:
+          BOOST_LOG(warning) << "[kwingrab] zkde_screencast_unstable_v1 version "sv << screencast_version_
+                             << " does not provide stream_region (needs >= "sv << meow::display_union::min_stream_region_version
+                             << "). Falling back to single-output capture."sv;
+          return {};
+        case union_status_t::no_usable_outputs:
+          BOOST_LOG(warning) << "[kwingrab] Could not derive a whole-desktop region from the advertised outputs. Falling back to single-output capture."sv;
+          return {};
+        case union_status_t::exceeds_capture_limits:
+          BOOST_LOG(error) << "[kwingrab] Whole-desktop region "sv << region.pixel_width << "x"sv << region.pixel_height
+                           << " exceeds the "sv << meow::display_union::max_pixel_width << "x"sv << meow::display_union::max_pixel_height
+                           << " capture limit. Falling back to single-output capture."sv;
+          return {};
+        case union_status_t::negative_origin:
+          BOOST_LOG(error) << "[kwingrab] Whole-desktop region starts at "sv << region.x << ","sv << region.y
+                           << ", left of / above the origin. Absolute pointer input is mapped from an origin-anchored "sv
+                           << "desktop size, so the picture would be correct while the mouse landed elsewhere. Falling back "sv
+                           << "to single-output capture. Move your outputs so the arrangement starts at 0,0 to use whole-desktop capture."sv;
+          return {};
+        case union_status_t::ok:
+          break;
+      }
+
+      if (!region.covers_whole_region) {
+        BOOST_LOG(info) << "[kwingrab] Outputs do not tile their bounding box; KWin renders the uncovered areas black."sv;
+      }
+
+      BOOST_LOG(info) << "[kwingrab] Whole-desktop region capture over "sv << region.contributing_outputs << " outputs:"sv
+                      << " logical "sv << region.width << "x"sv << region.height
+                      << " at "sv << region.x << ","sv << region.y
+                      << " scale "sv << region.scale
+                      << " -> capture resolution "sv << region.pixel_width << "x"sv << region.pixel_height
+                      << " highest refresh "sv << (static_cast<double>(region.refresh_mhz) / 1000.0) << "Hz"sv;
+
+      auto params = std::make_shared<output_parameter_t>();
+      params->name = std::string(meow::display_union::union_output_name);
+      params->pos_x = region.x;
+      params->pos_y = region.y;
+      params->width = region.pixel_width;
+      params->height = region.pixel_height;
+      params->logical_width = region.width;
+      params->logical_height = region.height;
+      params->refresh_mhz = region.refresh_mhz;
+      params->is_union = true;
+      out_params = std::move(params);
+      return region;
+    }
+
     uint32_t out_node_id = PW_ID_ANY;  ///< Out node ID.
     uint64_t out_objectserial = SPA_ID_INVALID;  ///< Out objectserial.
     std::shared_ptr<output_parameter_t> out_params = nullptr;  ///< Out params.
@@ -475,6 +654,10 @@ namespace kwin {
     struct zkde_screencast_unstable_v1 *kde_screencast_v1_ = nullptr;
     struct zkde_screencast_stream_unstable_v1 *kde_screencast_stream_v1_ = nullptr;
     std::map<struct wl_output *, std::shared_ptr<output_parameter_t>> outputs;
+    // MEOW-TOUCH(unified-desktop-capture): xdg-output objects and the bound screencast version.
+    struct zxdg_output_manager_v1 *xdg_output_manager = nullptr;
+    std::map<struct zxdg_output_v1 *, std::shared_ptr<output_parameter_t>> xdg_outputs;
+    uint32_t screencast_version_ = 0;
     std::vector<std::string> output_order;
     bool stream_failed = false;
     bool stream_ready = false;
@@ -534,7 +717,16 @@ namespace kwin {
         self->kde_screencast_v1_ = static_cast<struct zkde_screencast_unstable_v1 *>(
           wl_registry_bind(reg, name, &zkde_screencast_unstable_v1_interface, bind_ver)
         );
+        self->screencast_version_ = bind_ver;  // MEOW-TOUCH(unified-desktop-capture): stream_region needs >= 3
         BOOST_LOG(debug) << "[kwingrab] bound zkde_screencast_unstable_v1 version "sv << bind_ver;
+      } else if (!std::strcmp(interface, zxdg_output_manager_v1_interface.name)) {
+        // MEOW-TOUCH(unified-desktop-capture): xdg-output carries the logical geometry that
+        // stream_region needs and that wl_output cannot express under fractional scaling.
+        uint32_t bind_ver = std::min(version, static_cast<uint32_t>(3));
+        self->xdg_output_manager = static_cast<struct zxdg_output_manager_v1 *>(
+          wl_registry_bind(reg, name, &zxdg_output_manager_v1_interface, bind_ver)
+        );
+        BOOST_LOG(debug) << "[kwingrab] bound zxdg_output_manager_v1 version "sv << bind_ver;
       } else if (!std::strcmp(interface, wl_output_interface.name)) {
         // Bind version 4 - we need wl_output name for matching
         uint32_t bind_ver = std::min(version, static_cast<uint32_t>(4));
@@ -564,14 +756,20 @@ namespace kwin {
     };
 
     // wl_output listener (for mode/dimensions/name)
-    static void on_output_geometry(void *data, struct wl_output *output, int32_t x, int32_t y, int32_t pw [[maybe_unused]], int32_t ph [[maybe_unused]], int32_t subpixel [[maybe_unused]], const char *make [[maybe_unused]], const char *model [[maybe_unused]], int32_t transform [[maybe_unused]]) {
+    // MEOW-TOUCH(unified-desktop-capture): `transform` lost its [[maybe_unused]] because it is
+    // now read. wl_output::mode reports the pre-transform scanout mode while
+    // xdg_output::logical_size is post-transform, so without this a rotated output derives a
+    // scale from two swapped axes. `pos_x`/`pos_y` are untouched and keep coming from here.
+    static void on_output_geometry(void *data, struct wl_output *output, int32_t x, int32_t y, int32_t pw [[maybe_unused]], int32_t ph [[maybe_unused]], int32_t subpixel [[maybe_unused]], const char *make [[maybe_unused]], const char *model [[maybe_unused]], int32_t transform) {
       const auto *self = static_cast<screencast_t *>(data);
       const auto output_parameter = self->outputs.at(output);
       output_parameter->pos_x = x;
       output_parameter->pos_y = y;
+      output_parameter->transform = transform;
     }
 
-    static void on_output_mode(void *data, struct wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t refresh [[maybe_unused]]) {
+    // MEOW-TOUCH(unified-desktop-capture): `refresh` lost its [[maybe_unused]] because it is now read.
+    static void on_output_mode(void *data, struct wl_output *output, uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
       if (!(flags & WL_OUTPUT_MODE_CURRENT)) {
         return;
       }
@@ -579,14 +777,17 @@ namespace kwin {
       const auto output_parameter = self->outputs.at(output);
       output_parameter->width = width;
       output_parameter->height = height;
+      output_parameter->refresh_mhz = refresh;  // MEOW-TOUCH(unified-desktop-capture)
     }
 
     static void on_output_done(void *data [[maybe_unused]], struct wl_output *output [[maybe_unused]]) {
       // Currently unused
     }
 
-    static void on_output_scale(void *data [[maybe_unused]], struct wl_output *output [[maybe_unused]], int32_t factor [[maybe_unused]]) {
-      // Currently unused
+    static void on_output_scale(void *data, struct wl_output *output, int32_t factor) {
+      // MEOW-TOUCH(unified-desktop-capture): fallback scale for compositors without xdg-output.
+      const auto *self = static_cast<screencast_t *>(data);
+      self->outputs.at(output)->wl_scale = factor > 0 ? factor : 1;
     }
 
     static void on_output_name(void *data, struct wl_output *output, const char *name) {
@@ -597,6 +798,49 @@ namespace kwin {
     static void on_output_description(void *data [[maybe_unused]], struct wl_output *output [[maybe_unused]], const char *description [[maybe_unused]]) {
       // Currently unused
     }
+
+    // MEOW-TOUCH(unified-desktop-capture): xdg-output listener — the authoritative source of
+    // logical position and size, which is the coordinate space stream_region operates in.
+    static void on_xdg_output_logical_position(void *data, struct zxdg_output_v1 *xdg_output, int32_t x, int32_t y) {
+      const auto *self = static_cast<screencast_t *>(data);
+      if (const auto entry = self->xdg_outputs.find(xdg_output); entry != self->xdg_outputs.end()) {
+        // Stored beside `pos_x`/`pos_y`, never over them: those feed
+        // display_t::offset_x/offset_y, which pipewire.cpp equality-matches against
+        // wl::monitors(). Binding xdg-output for the union must stay invisible to
+        // single-output capture. Only the union path reads these fields.
+        entry->second->xdg_logical_x = x;
+        entry->second->xdg_logical_y = y;
+        entry->second->has_xdg_position = true;
+      }
+    }
+
+    static void on_xdg_output_logical_size(void *data, struct zxdg_output_v1 *xdg_output, int32_t width, int32_t height) {
+      const auto *self = static_cast<screencast_t *>(data);
+      if (const auto entry = self->xdg_outputs.find(xdg_output); entry != self->xdg_outputs.end()) {
+        entry->second->logical_width = width;
+        entry->second->logical_height = height;
+      }
+    }
+
+    static void on_xdg_output_done(void *data [[maybe_unused]], struct zxdg_output_v1 *xdg_output [[maybe_unused]]) {
+      // Deprecated since xdg-output v3; wl_output::done is authoritative.
+    }
+
+    static void on_xdg_output_name(void *data [[maybe_unused]], struct zxdg_output_v1 *xdg_output [[maybe_unused]], const char *name [[maybe_unused]]) {
+      // wl_output::name is already used for matching; nothing to do here.
+    }
+
+    static void on_xdg_output_description(void *data [[maybe_unused]], struct zxdg_output_v1 *xdg_output [[maybe_unused]], const char *description [[maybe_unused]]) {
+      // Currently unused
+    }
+
+    static constexpr struct zxdg_output_v1_listener xdg_output_listener = {
+      .logical_position = on_xdg_output_logical_position,
+      .logical_size = on_xdg_output_logical_size,
+      .done = on_xdg_output_done,
+      .name = on_xdg_output_name,
+      .description = on_xdg_output_description,
+    };
 
     static constexpr struct wl_output_listener output_listener = {
       .geometry = on_output_geometry,
@@ -669,6 +913,25 @@ namespace kwin {
    */
   class kwin_t: public pipewire::pipewire_display_t {
   public:
+    /**
+     * @brief MEOW-TOUCH(unified-desktop-capture): keep the union's logical size across a
+     *        PipeWire resolution renegotiation.
+     *
+     * The base implementation recovers `logical_width`/`logical_height` by matching a single
+     * `wl::monitors()` entry against this display's offset and size. A whole-desktop region
+     * spans several monitors, so no entry can ever match and the values would silently stay
+     * at 0 — which downstream (`video.cpp` touch-port setup) reads as "scaling unknown" and
+     * mismaps absolute pointer input on any fractionally scaled desktop. Re-install the known
+     * values first, then let the base fill in the desktop-wide fields as usual.
+     */
+    void verify_and_update_display_parameters() override {
+      if (union_logical_width > 0 && union_logical_height > 0) {
+        this->logical_width = union_logical_width;
+        this->logical_height = union_logical_height;
+      }
+      pipewire::pipewire_display_t::verify_and_update_display_parameters();
+    }
+
     int configure_stream(const std::string &display_name, int &out_pipewire_fd, uint32_t &out_pipewire_node, uint64_t &out_pipewire_objectserial) override {
       screencast = std::make_unique<screencast_t>();
       if (screencast->init(true) < 0) {
@@ -701,14 +964,25 @@ namespace kwin {
         this->offset_y = screencast->out_params->pos_y;
         this->width = screencast->out_params->width;
         this->height = screencast->out_params->height;
-        this->logical_width = 0;  // Explicitly mark for pipewire_display_t to try to figure this out.
-        this->logical_height = 0;  // Explicitly Mark for pipewire_display_t to try to figure this out.
+        // MEOW-TOUCH(unified-desktop-capture): the whole-desktop region has no backing
+        // wl_output for pipewire_display_t to match on, so its logical size is reported here
+        // and remembered for verify_and_update_display_parameters() above. Single-output
+        // capture keeps the previous behaviour of leaving these at 0.
+        union_logical_width = screencast->out_params->is_union ? screencast->out_params->logical_width : 0;
+        union_logical_height = screencast->out_params->is_union ? screencast->out_params->logical_height : 0;
+        this->logical_width = union_logical_width;  // Explicitly mark for pipewire_display_t to try to figure this out.
+        this->logical_height = union_logical_height;  // Explicitly Mark for pipewire_display_t to try to figure this out.
         return 0;
       }
       return -1;
     }
 
     std::unique_ptr<screencast_t> screencast;  ///< Screencast.
+
+  private:
+    // MEOW-TOUCH(unified-desktop-capture): remembered union logical size, 0 for single-output.
+    int union_logical_width = 0;
+    int union_logical_height = 0;
   };
 }  // namespace kwin
 

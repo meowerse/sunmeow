@@ -61,6 +61,7 @@
 #include "src/config.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
+#include "src/meow/display_union.h"  // MEOW-TOUCH(unified-desktop-capture): reserved output_name check
 #include "src/platform/common.h"
 #include "vaapi.h"
 
@@ -1377,6 +1378,17 @@ namespace platf {
     if (sources.none()) {
       BOOST_LOG(error) << "Unable to initialize capture method"sv;
       return nullptr;
+    }
+
+    // MEOW-TOUCH(unified-desktop-capture): whole-desktop capture only exists in the kwin
+    // backend, and kwin is not auto-selected once portal has claimed a source above.
+#ifdef SUNSHINE_BUILD_KWIN
+    const bool kwin_selected = sources[source::KWIN];
+#else
+    constexpr bool kwin_selected = false;
+#endif
+    if (const auto union_warning = meow::display_union::union_backend_warning(kwin_selected, config::video.output_name); !union_warning.empty()) {
+      BOOST_LOG(warning) << union_warning;
     }
 
     if (!gladLoaderLoadEGL(NULL)) {
