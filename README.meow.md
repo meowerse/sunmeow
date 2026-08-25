@@ -285,9 +285,10 @@ git diff --numstat origin-upstream/master -- src/ # any non-zero DELETION count 
 ```
 
 The registry records, per file, *why layers 1–3 of the additive-only hierarchy were
-insufficient*. That justification is the point of the table; the count is not. As of this
-writing exactly one upstream C++ file has deletions at all, and the argument for it is in the
-registry rather than here.
+insufficient*. That justification is the point of the table; the count is not. Two upstream C++
+files currently have a non-zero deletion count, for two different reasons — one deliberate and
+capped, one merely lines modified in place — and the registry explains which is which. Read it
+there rather than trusting a number restated here.
 
 The full rules — the additive-only hierarchy, what needs human sign-off, and the testing
 requirements — are in [`CLAUDE.md`](./CLAUDE.md). Read it before your first edit.

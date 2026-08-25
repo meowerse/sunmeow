@@ -1091,7 +1091,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{The client must support the viewport control message. A client that never sends one streams the
             full desktop exactly as before.}
             @warning{While a crop is active, absolute pointer and touch coordinates are not remapped and will land in
-            the wrong place. Only the software scaling path applies the crop today; VA-API and CUDA are unaffected.
+            the wrong place. The software and CUDA/NVENC scaling paths apply the crop; VA-API is unaffected.
             See the sunmeow documentation for details.}
         </td>
     </tr>

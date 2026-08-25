@@ -9,13 +9,14 @@ additive-only prime directive — before adding a row.
 
 ---
 
-## Current state: no upstream file has content **removed**
+## Current state: exactly one upstream file has content **removed**
 
 Verified 2026-08-25 against `origin-upstream/master` (Sunshine `790d70f0`).
 
-Six upstream **C++ sources** are now modified: two by `unified-desktop-capture`
-(`kwingrab.cpp`, `misc.cpp`) and four — `config.h`, `config.cpp`, `stream.cpp`, `video.cpp` —
-that now carry **two** markers each, one from `adaptive-bitrate` and one from `viewport`.
+Nine upstream **C++ sources** are now modified: two by `unified-desktop-capture`
+(`kwingrab.cpp`, `misc.cpp`), four — `config.h`, `config.cpp`, `stream.cpp`, `video.cpp` —
+that now carry **two** markers each, one from `adaptive-bitrate` and one from `viewport`, and
+three by `viewport-cuda` (`cuda.h`, `cuda.cu`, `cuda.cpp`).
 An earlier revision of this file said *"Zero `MEOW-TOUCH` markers exist in `src/`"* and
 described that as the state to keep. The first half stopped being true the moment
 whole-desktop capture landed; the second half is still the goal.
@@ -27,12 +28,31 @@ is why they merged with a conflict only in the shared include block and in this 
 Every decision either feature makes — payload validation, bounds resolution, config
 correction, crop geometry and the entire control law — lives in `src/meow/adaptive_bitrate.h`
 and `src/meow/viewport.h`, neither of which has a GPU, network, FFmpeg or Sunshine
-dependency, and both of which are unit tested without hardware.
+dependency, and both of which are unit tested without hardware. `viewport-cuda` follows the
+same shape in `src/meow/viewport_cuda.h`, and lands on three files neither of the other two
+features touches.
+
+> **`src/platform/linux/cuda.cu` is the first upstream file we have removed lines from: 11 of
+> them.** That is a real cost and it is recorded here rather than smoothed over. Every one is
+> inside the two `__global__` conversion kernels, and every one is the *same expression
+> generalised*: `float scale` becomes `const source_t source`, and `idX * scale` becomes
+> `source.originX + idX * source.stepX`. A crop is a source **origin**, and a kernel whose
+> source origin is the literal `(0, 0)` written into the arithmetic cannot be given one
+> additively. The alternative that keeps the count at zero — a second pair of
+> `RGBA_to_NV12_cropped` / `RGBA_to_YUV444_cropped` kernels beside the originals — was
+> rejected deliberately: it would leave two copies of the colour-conversion maths, and the
+> failure mode is that upstream fixes one of them and we silently ship the other. Eleven
+> mechanical lines in one file, all in one place, resolvable at a glance during a merge, beats
+> a duplicated kernel that nobody notices has drifted. `cuda.h` and `cuda.cpp` are still `0`
+> deletions.
 
 | File | Marker | Why layers 1–3 were insufficient | Added |
 | --- | --- | --- | --- |
 | `src/platform/linux/kwingrab.cpp` | `MEOW-TOUCH(unified-desktop-capture)` | The `wl_display`, the registry and the `zkde_screencast_unstable_v1` proxy are all private members of `kwin::screencast_t`, which is defined inside the `.cpp`, is not virtual and is not exported — so it cannot be subclassed or wrapped from `src/meow/` (layers 1–3 all fail). What remains upstream: the `zxdg_output_manager_v1`/`xdg_output` bindings, extra fields on `output_parameter_t`, the `stream_region` call, `static_assert`s pinning `meow::display_union::output_transform_t` to `enum wl_output_transform`, and the log statements that report the decision. The `xdg_output` logical position is stored in its own fields and never written back over `pos_x`/`pos_y`, so binding the protocol is unobservable to single-output capture. **All geometry and all policy** — the bounding box, the scale choice, the coverage test, the protocol-version gate and the oversize refusal — live in `src/meow/display_union.h` and are unit tested there. `kwin_t::verify_and_update_display_parameters()` is a layer-2 override of an existing `virtual`, not new upstream logic. | 2026-08-24 |
 | `src/platform/linux/misc.cpp` | `MEOW-TOUCH(unified-desktop-capture)` | Two hooks: an include, and three lines after capture-source selection that log a warning when `output_name` requests whole-desktop capture on a backend that cannot provide it. Layer 1 fails because the fact being reported — which capture source won — exists only in this function's `sources` bitset, which is file-static and not exported. Layer 2 has nothing to subclass (`init()` is a free function). The decision itself is layer 1: `meow::display_union::union_backend_warning()` returns the message as a string and is unit tested; the upstream lines only choose whether to log it. | 2026-08-25 |
+| `src/platform/linux/cuda.cu` | `MEOW-TOUCH(viewport-cuda)` | **The only upstream file with deletions: 11 lines, 27 added.** All inside `RGBA_to_NV12()` and `RGBA_to_YUV444()`. Layer 1 fails on physics, not on structure: the kernel computes its own source coordinate per destination pixel (`float x = idX * scale`), so the captured frame's origin is baked into that expression as the literal `0`, and no amount of code beside it can move where the kernel reads. Layer 2 has nothing to subclass — these are `__global__` functions. Layer 3 cannot be one line: the parameter, the two coordinate computations and the three neighbour taps of the 2x2 NV12 block all mention the old mapping. The edit itself is mechanical and carries **no geometry**: `float scale` becomes `const source_t source` (a POD declared in `cuda.h`), and the arithmetic becomes `source.originX + idX * source.stepX`. `{0, 0, scale, scale}` reproduces the old behaviour bit for bit, because `0.0f + v == v` for every finite float. Everything that decides *what* the origin and steps are lives in `src/meow/viewport_cuda.h` and is unit tested without a GPU; `tools/meow/viewport_cuda_probe.cpp` then checks on real hardware that the kernel reads the rectangle those numbers describe. | 2026-08-25 |
+| `src/platform/linux/cuda.h` | `MEOW-TOUCH(viewport-cuda)` | **Two additions, `0` deletions**: a `source_t` POD next to the existing `viewport_t`, and a `source_t source` member on `sws_t` next to the existing `float scale`. They are declared here rather than in `src/meow/` because `cuda.cu` is compiled by nvcc at C++17 and must not include anything from `src/meow/` (`viewport.h` uses defaulted `operator==`, which is C++20 — and NVCC's own comment in `cuda.cu` warns that standard headers break it). `src/meow/viewport_cuda.h` therefore writes into these two types through a template rather than naming them, so the dependency points one way only; `MeowViewportCuda.WritesStraightIntoTheRealCudaTypes` pins the field-name agreement. Kept deliberately distinct from `viewport_t`, which is a *destination* rectangle — conflating the two spaces is the bug this whole feature is most likely to grow. **One consequence a syncing agent must know:** `float scale` is now read only by `sws_t`'s own constructor, which uses it to seed `source = {0, 0, scale, scale}`. The kernels consume `source`. So an upstream change that alters how `scale` is computed still works, but an upstream change that *writes* `scale` anywhere else will compile cleanly and do nothing. The declaration carries that warning in place; check it on every sync. | 2026-08-25 |
+| `src/platform/linux/cuda.cpp` | `MEOW-TOUCH(viewport-cuda)` | **Two hooks plus two includes, `0` deletions**: one line at the top of `cuda_ram_t::convert()` and of `cuda_vram_t::convert()`, and one line at the end of `cuda_t::set_frame()`. The two member functions those lines call (`meow_viewport_init()`, `meow_viewport_apply()`) are also here, and they are the part that could not be layered: `sws`, `stream`, `frame`, `is_yuv444` and `linear_interpolation` are members of `cuda_t`, which is declared inside this `.cpp`, is not exported and is constructed by `make_avcodec_encode_device()` — so layers 1–3 all fail exactly as they do for `avcodec_software_encode_device_t` in `src/video.cpp`. They contain no geometry (`meow::viewport::plan_for_frame()` and `cuda_scaler_config()` decide, `apply_cuda_scaler()` assigns) and one piece of genuinely CUDA-specific machinery: a 2x2 all-black texture. With `cudaAddressModeClamp` every coordinate reads black from it, so re-running the *ordinary* kernel against it blanks the surface with exactly the black `apply_colorspace()` writes — instead of a host-side copy of the colour-matrix arithmetic that could drift. That pass runs only when the destination rectangle moves, which the probe shows is load-bearing: without it, reverting a crop leaves 16093 stale pixels in the letterbox padding. | 2026-08-25 |
 | `src/config.h` | `MEOW-TOUCH(adaptive-bitrate)` | Two `int` fields added next to `max_bitrate`. `config::video` is a plain aggregate struct with a positional brace initializer in `config.cpp`; there is no registration hook, no virtual, and nothing to subclass, so layers 1–3 all fail for "add a setting". Zero deletions — the fields are appended after `max_bitrate`, before `minimum_fps_target`. | 2026-08-25 |
 | `src/config.h` | `MEOW-TOUCH(viewport)` | **One line**: a `bool viewport_following` member on `video_t`. Layers 1–3 cannot register a setting — `apply_config()` writes into this struct by reference and nothing else can be substituted for it. The alternative was tried and reverted: parsing the key out of the config file from `src/meow/` alone touched no upstream file, but Sunshine's own parser then never learned the key existed and logged `Unrecognized configurable option [meow_viewport_following]` at every startup, telling a user who had just enabled the feature that the setting does not exist. §2's hierarchy exists to keep merges cheap, not to make the product worse. Registering it is also the only route to the Web UI. | 2026-08-25 |
 | `src/config.cpp` | `MEOW-TOUCH(adaptive-bitrate)` | Three hooks: an include, two entries in the positional defaults initializer (which must stay positionally aligned with `config.h`, so it cannot move to another file), and two `int_f` calls plus a one-line call to `meow::adaptive_bitrate::validate_config()`. **All validation logic is layer 1** — `validate_config()` lives in `src/meow/adaptive_bitrate.h` and is unit tested against negatives, zero, inverted ranges and absurd magnitudes; the upstream lines only parse and log what it returns. `apply_config()` is a free function in an anonymous namespace with no extension point. | 2026-08-25 |
@@ -47,13 +67,26 @@ dependency, and both of which are unit tested without hardware.
 | `src_assets/common/assets/web/public/assets/locale/en.json` | (no marker — JSON) | Six strings total, from two features. `adaptive-bitrate`: Four strings (label + description for each setting). Required by the same consistency test. English only, per the upstream rule in `AGENTS.md`. `viewport`: Two strings, label and description, inserted in the existing alphabetical order. Required by `ConfigConsistencyTest.AllConfigOptionsExistInAllFiles`. | 2026-08-25 |
 | `docs/configuration.md` | (no marker — prose only) | Documents the reserved `output_name = all` value next to the existing `output_name` description, and (2026-08-25) adds the `meow_viewport_following` section after it. A separate page would leave the settings undocumented where users actually look, and the consistency test requires this one to be here. `adaptive-bitrate` additionally documents `adaptive_bitrate_min` and `adaptive_bitrate_max` next to the existing `max_bitrate`, which is where a user comparing the two will look. `tests/integration/test_config_consistency.cpp` requires every option in `config.cpp` to appear here, in `config.html` and in `en.json`, **in the same order within a section** — so these are a hard requirement of the gate, not a choice. | 2026-08-25 |
 
-The edits are additive, and the geometry and policy they hook into live in
-`src/meow/display_union.h`, unit tested without hardware.
+The edits are otherwise additive, and the geometry and policy they hook into live in
+`src/meow/display_union.h`, `src/meow/adaptive_bitrate.h`, `src/meow/viewport.h` and
+`src/meow/viewport_cuda.h`, all unit tested without hardware.
 
-**One accounted-for exception, so the check below does not cry wolf.**
-`src/platform/linux/kwingrab.cpp` reports **8 deletions**. No upstream content was removed:
-all eight are lines *modified in place*, which git necessarily counts as a delete plus an add.
-All eight, exactly:
+**Exactly two upstream source files have a non-zero deletion count, and they are non-zero for
+completely different reasons.** Knowing which is which is the whole point of this section — a
+check that fires on a benign file teaches you to ignore it, and then you ignore the real one.
+
+```
+27 ins    11 del   src/platform/linux/cuda.cu        <- deliberate. MUST STAY 11.
+282 ins    8 del   src/platform/linux/kwingrab.cpp   <- modified in place. Benign.
+```
+
+**`cuda.cu` — 11, and it must stay 11.** These are real edits to upstream content, argued in
+the table above. If that number *grows*, someone has started editing the kernel freely instead
+of consuming `src/meow/viewport_cuda.h`, and the geometry has begun leaking back into upstream
+code. Treat any increase as a defect, not as progress.
+
+**`kwingrab.cpp` — 8, and no upstream content was removed.** All eight are lines *modified in
+place*, which git necessarily counts as a delete plus an add. Exactly:
 
 - three `wl_output` listener signatures that lost `[[maybe_unused]]` because the parameter is
   now read — `on_output_geometry` (`transform`), `on_output_mode` (`refresh`), and
@@ -65,15 +98,18 @@ All eight, exactly:
 - two `this->logical_width = 0;` / `logical_height = 0;` lines whose trailing comments were
   rewritten.
 
-Verify rather than trust this list:
+Verify rather than trust either list — and note the base must be the **fork point**, not
+upstream `master`, or the result is contaminated by upstream's own drift:
 
 ```bash
-git diff $(git merge-base origin-upstream/master HEAD) HEAD -- src/platform/linux/kwingrab.cpp \
-  | grep -E '^-' | grep -v '^---'
+mb=$(git merge-base origin-upstream/master HEAD)
+git diff --numstat $mb HEAD -- src/ | awk '$2>0'      # should print exactly the two lines above
+git diff $mb HEAD -- src/platform/linux/kwingrab.cpp | grep -E '^-' | grep -v '^---'
 ```
 
-Every deleted line must have a near-identical added line beside it. A deletion that stands
-alone is upstream content we removed, and is the thing this check exists to catch.
+For `kwingrab.cpp`, every deleted line must have a near-identical added line beside it. A
+deletion that stands alone is upstream content we removed, and is the thing this check exists
+to catch.
 
 Two upstream **non-source** files are appended to. Both are append-only (`0` deletions), so
 they cannot conflict except at the very end of the file, but they are upstream files and are
@@ -113,23 +149,25 @@ git diff --numstat origin-upstream/master -- .
 ```
 
 Run both **before every upstream sync** ([`CLAUDE.md` §4](../../CLAUDE.md)). The first grep
-now returns the `unified-desktop-capture` and `viewport` markers; reconcile them against the
-table above row by row. Any marker the table does not list is the bug.
+now returns the `unified-desktop-capture`, `viewport`, `viewport-cuda` and `adaptive-bitrate`
+markers; reconcile them against the table above row by row. Any marker the table does not list is the bug.
 
-What matters in (2) is the **deletion** column — we add lines to upstream files and, where a
-line genuinely had to change, we replace it in place and account for it above. The insertion
-counts change with every edit to our own docs, so do not treat them as fixed; check the middle
-column, and treat any non-zero value as a question to answer, not automatically as a fault:
+What matters in (2) is the **deletion** column. We add lines to upstream files; where a line
+genuinely had to change we replace it in place, and where upstream content genuinely had to go
+we account for it above. Two counts are currently non-zero and both are explained there —
+`cuda.cu` at `11` (which must not grow) and `kwingrab.cpp` at `8` (modified in place). The
+insertion counts change with every edit to our own docs, so do not treat them as fixed; check
+the middle column, and treat any non-zero value as **a question to answer, not automatically a
+fault**:
 
 ```
 1	0	.gitignore
 17	0	AGENTS.md
 <n>	0	src/platform/linux/kwingrab.cpp
 <n>	0	src/platform/linux/misc.cpp
-1	0	.gitignore
-17	0	AGENTS.md
-<n>	0	src/platform/linux/kwingrab.cpp
-<n>	0	src/platform/linux/misc.cpp
+<n>	0	src/platform/linux/cuda.h
+<n>	11	src/platform/linux/cuda.cu
+<n>	0	src/platform/linux/cuda.cpp
 <n>	0	src/config.h
 <n>	0	src/config.cpp
 <n>	0	src/stream.cpp
@@ -138,10 +176,6 @@ column, and treat any non-zero value as a question to answer, not automatically 
 <n>	0	src_assets/common/assets/web/configs/tabs/AudioVideo.vue
 <n>	0	src_assets/common/assets/web/configs/tabs/audiovideo/DisplayModesSettings.vue
 <n>	0	src_assets/common/assets/web/public/assets/locale/en.json
-<n>	0	docs/configuration.md
-<n>	0	CLAUDE.md
-<n>	0	README.meow.md
-<n>	0	docs/meow/TOUCHPOINTS.md
 <n>	0	docs/configuration.md
 <n>	0	CLAUDE.md
 <n>	0	README.meow.md

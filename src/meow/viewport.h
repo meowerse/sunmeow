@@ -736,7 +736,8 @@ namespace meow::viewport {
     if (enabled) {
       return std::string(
         "meow viewport following: enabled. The client may request a crop of the desktop; "
-        "only the software scaling path honours it, and absolute pointer coordinates are not remapped."
+        "the software and CUDA scaling paths honour it, VA-API does not, and absolute pointer "
+        "coordinates are not remapped."
       );
     }
     return std::string("meow viewport following: disabled. Set '").append(following_config_key).append(" = enabled' in sunshine.conf to allow the client to crop the streamed desktop.");
