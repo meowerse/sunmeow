@@ -112,18 +112,24 @@ jobs:
       - name: Build
         run: cmake --build build --parallel "$(nproc)"
 
-      # These suites need real hardware or session services (audio devices, a
-      # /dev/uinput-backed virtual HID, an encoder, a system tray). On a runner
-      # they do not fail -- they HANG, which would burn the job timeout and tell
-      # us nothing. They are excluded explicitly and named here so the gap is
-      # visible rather than silent. They still run in the local gate on a real
-      # desktop, where 398/403 pass.
+      # These suites need real hardware or session services (a sound card, a
+      # /dev/uinput-backed virtual HID, a working encoder). On a runner they do not
+      # report a failing assertion -- they fail in SetUpTestSuite, which gtest counts
+      # as a failed SUITE while still reporting "0 FAILED TESTS". They are named in
+      # full here and the gap is deliberate; they still run in the local gate on a
+      # real desktop.
+      #
+      # Use the FULL suite name. These are value-parameterised, so their real names
+      # carry an instantiation prefix ("Configurations/AudioTest", not "AudioTest").
+      # gtest_filter anchors at the start of the name, so the unprefixed patterns
+      # this file used to carry matched nothing at all and the suites ran anyway --
+      # which is exactly how the first green-looking build still went red.
       - name: Test
         working-directory: build/tests
         timeout-minutes: 15
         run: |
           # Built as a single-line variable on purpose: a backslash continuation
           # inside the filter would fold the YAML indentation into the argument.
-          EXCLUDE='-AudioTest*:AVAudioTest*:ProcessSystemAudioIOProcTest*:MouseHIDTest*:InputGamepadSessionTest*:InvalidVirtualInputLicenseRequestTest*:EncoderTest*:SoftwareEncoderConversion*:SystemTrayTest*:SystemTrayDisabled*'
+          EXCLUDE='-Configurations/AudioTest*:MouseInputs/MouseHIDTest*:EncoderVariants/EncoderTest*:InputGamepadSessionTest*:SoftwareEncoderConversion*:SystemTrayTest*'
           echo "excluding: $EXCLUDE"
           ./test_sunshine --gtest_filter="$EXCLUDE"
