@@ -1143,8 +1143,18 @@ namespace stream {
     // was previously dropped as an unknown type. Validation and all control logic live in
     // src/meow/, so this hook only forwards a validated sample to the encoder thread.
     server->map(meow::adaptive_bitrate::frame_fec_status_packet_type, [&](session_t *session, const std::string_view &payload) {
+      if (config::video.adaptive_bitrate_min <= 0) {
+        return;  // Feature off: do no per-packet work at all.
+      }
       if (const auto sample = meow::adaptive_bitrate::parse_frame_fec_status(payload)) {
-        session->mail->queue<meow::adaptive_bitrate::loss_sample_t>(meow::adaptive_bitrate::mail_id)->raise(*sample);
+        // mail_raw_t::queue() returns null when the id is present but its weak_ptr has
+        // already expired - which happens for the whole window between the encoder thread
+        // dropping its reference and ~post_t running cleanup(), and cleanup() only erases one
+        // stale entry per call. The client controls both the rate of these packets and, via
+        // loss-induced reinits, the timing, so this must be checked.
+        if (auto samples = session->mail->queue<meow::adaptive_bitrate::loss_sample_t>(meow::adaptive_bitrate::mail_id)) {
+          samples->raise(*sample);
+        }
       }
     });
 

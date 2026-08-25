@@ -96,6 +96,18 @@ namespace meow::adaptive_bitrate {
   inline constexpr std::string_view mail_id = "meow/adaptive_bitrate/loss_samples";
 
   /**
+   * @brief Mailbox channel id remembering the bitrate in force across an encoder reinit.
+   *
+   * `encode_run()` returns and is re-entered on every `capture_e::reinit` (display switch, HDR
+   * toggle, resolution change), destroying the governor with it. Without this, a session that
+   * had backed off to 3000 kbps because the link is bad would snap back to the ceiling on the
+   * next reinit and have to re-converge from scratch - the wrong direction at the worst
+   * moment. Parking the last decision on the session mailbox keeps it for the session's
+   * lifetime while leaving the governor's own lifetime tied to the codec context it writes to.
+   */
+  inline constexpr std::string_view resume_mail_id = "meow/adaptive_bitrate/current_kbps";
+
+  /**
    * @brief One validated loss observation derived from a client FEC report.
    */
   struct loss_sample_t {
@@ -145,8 +157,8 @@ namespace meow::adaptive_bitrate {
    */
   struct tuning_t {
     std::chrono::milliseconds window {1000};  ///< Length of one evaluation window.
-    double loss_high = 0.05;  ///< Window loss fraction at or above which the window is "bad".
-    double loss_low = 0.005;  ///< Window loss fraction at or below which the window is "good".
+    double damaged_high = 0.15;  ///< Damaged-frame fraction at or above which the window is "bad".
+    double damaged_low = 0.02;  ///< Damaged-frame fraction at or below which the window is "good".
     int bad_windows_to_back_off = 2;  ///< Consecutive bad windows required before backing off.
     int good_windows_to_recover = 10;  ///< Consecutive good windows required before recovering.
     double back_off_factor = 0.75;  ///< Multiplicative decrease applied on back-off.
@@ -172,7 +184,7 @@ namespace meow::adaptive_bitrate {
     int kbps = 0;  ///< The bitrate the encoder should now use.
     int previous_kbps = 0;  ///< The bitrate in force before this decision.
     reason_t reason = reason_t::none;  ///< What triggered the change.
-    double observed_loss = 0.0;  ///< Loss fraction of the window that triggered it.
+    double observed_damaged = 0.0;  ///< Damaged-frame fraction of the window that triggered it.
   };
 
   /**
@@ -342,17 +354,27 @@ namespace meow::adaptive_bitrate {
     }
 
     if (cfg_min == 0) {
-      // Adaptation disabled. A maximum on its own does nothing, and saying so is kinder than
-      // letting the user believe it is in force.
+      // Adaptation disabled. Name the real cause: a minimum that was typed as a negative is a
+      // different mistake from a minimum that was never set, and sending the user looking for
+      // a missing line when they actually have a typo'd one wastes their time.
+      if (orig_min < 0) {
+        warning = "adaptive_bitrate_min = " + std::to_string(orig_min) +
+                  " is negative; adaptive bitrate is disabled";
+        if (orig_max != 0) {
+          warning += " (adaptive_bitrate_max = " + std::to_string(orig_max) + " therefore has no effect)";
+        }
+        cfg_max = 0;
+        return false;
+      }
       if (cfg_max != 0) {
         warning = "adaptive_bitrate_max = " + std::to_string(orig_max) +
                   " has no effect because adaptive_bitrate_min is not set; adaptive bitrate is disabled";
         cfg_max = 0;
         return false;
       }
-      if (orig_min < 0) {
-        warning = "adaptive_bitrate_min = " + std::to_string(orig_min) +
-                  " is negative; adaptive bitrate is disabled";
+      if (orig_max < 0) {
+        warning = "adaptive_bitrate_max = " + std::to_string(orig_max) +
+                  " is negative; ignored";
         return false;
       }
       return true;
@@ -404,12 +426,94 @@ namespace meow::adaptive_bitrate {
   }
 
   /**
+   * @brief The rate-control shape an encoder session was opened with.
+   *
+   * `video.cpp` establishes a specific relationship between `bit_rate`, `rc_max_rate`,
+   * `rc_min_rate` and `rc_buffer_size` at init: CBR pins `rc_min_rate` to the bitrate, the
+   * `CBR_WITH_VBR` encoders instead set `bit_rate = rc_max_rate - 1` to force VBR mode, and
+   * the VBV buffer is a fraction of the bitrate that the nvenc `vbv_percentage_increase`
+   * setting can enlarge. Re-deriving those from scratch on every change would silently
+   * discard that tuning, so the shape is captured once and re-applied proportionally.
+   *
+   * Pure and separated from the FFmpeg glue so it can be unit tested against the exact shapes
+   * `video.cpp` produces, without opening an encoder.
+   */
+  struct rate_shape_t {
+    bool cbr = false;  ///< Whether `rc_min_rate` was pinned to the bitrate.
+    std::int64_t vbr_offset = 0;  ///< `rc_max_rate - bit_rate` at init (1 for `CBR_WITH_VBR`, else 0).
+    double buffer_ratio = 0.0;  ///< `rc_buffer_size / rc_max_rate` at init; 0 when unlimited.
+
+    /**
+     * @brief Capture the shape from the values an encoder session was opened with.
+     *
+     * @param bit_rate `AVCodecContext::bit_rate` at init.
+     * @param rc_max_rate `AVCodecContext::rc_max_rate` at init.
+     * @param rc_min_rate `AVCodecContext::rc_min_rate` at init.
+     * @param rc_buffer_size `AVCodecContext::rc_buffer_size` at init.
+     * @return The captured shape.
+     */
+    [[nodiscard]] static rate_shape_t capture(
+      const std::int64_t bit_rate,
+      const std::int64_t rc_max_rate,
+      const std::int64_t rc_min_rate,
+      const int rc_buffer_size
+    ) {
+      const std::int64_t opened = rc_max_rate > 0 ? rc_max_rate : bit_rate;
+      rate_shape_t shape;
+      if (opened <= 0) {
+        return shape;
+      }
+      shape.cbr = rc_min_rate > 0;
+      shape.vbr_offset = opened - bit_rate;
+      shape.buffer_ratio = static_cast<double>(rc_buffer_size) / static_cast<double>(opened);
+      return shape;
+    }
+  };
+
+  /**
+   * @brief The four rate-control values to write for a new bitrate.
+   */
+  struct rates_t {
+    std::int64_t bit_rate = 0;  ///< New `AVCodecContext::bit_rate`.
+    std::int64_t rc_max_rate = 0;  ///< New `AVCodecContext::rc_max_rate`.
+    std::int64_t rc_min_rate = 0;  ///< New `AVCodecContext::rc_min_rate`; 0 leaves it alone.
+    int rc_buffer_size = 0;  ///< New `AVCodecContext::rc_buffer_size`; 0 leaves it alone.
+  };
+
+  /**
+   * @brief Scale a captured rate-control shape to a new bitrate.
+   *
+   * @param shape Shape captured at encoder init.
+   * @param kbps New bitrate in kbps.
+   * @return The values to write onto the codec context.
+   */
+  [[nodiscard]] inline rates_t rates_for(const rate_shape_t &shape, const int kbps) {
+    const std::int64_t bits = static_cast<std::int64_t>(kbps) * 1000;
+    rates_t rates;
+    rates.rc_max_rate = bits;
+    rates.bit_rate = bits - shape.vbr_offset;
+    rates.rc_min_rate = shape.cbr ? bits : 0;
+    if (shape.buffer_ratio > 0.0) {
+      rates.rc_buffer_size = static_cast<int>(static_cast<double>(bits) * shape.buffer_ratio);
+    }
+    return rates;
+  }
+
+  /**
    * @brief Windowed AIMD bitrate controller.
    *
    * Loss reports arrive irregularly and only when something went wrong, so the controller
    * accumulates them into fixed-length windows and makes at most one decision per window.
    * Within a window it decides nothing; at each boundary it classifies the window as bad
-   * (loss at or above `loss_high`), good (loss at or below `loss_low`), or neither.
+   * (damaged-frame fraction at or above `damaged_high`), good (at or below `damaged_low` with
+   * no unrecoverable frame), or neither.
+   *
+   * The metric is **the fraction of frames we encoded that the client reported as damaged**,
+   * not the packet loss inside those frames. The client only reports damaged frames, so
+   * "lost packets / reported packets" answers "how bad were the bad frames" and is inflated
+   * by roughly the frame rate - one lost packet in one frame of a 60 fps 8 Mbps stream reads
+   * as ~5% while true loss is under 0.1%. `tick()` therefore counts the frames the encoder
+   * actually produced and uses that as the denominator.
    *
    * The band between the two thresholds is a deliberate dead zone: a window that lands in it
    * resets *both* counters, so a link hovering around 2% loss neither backs off nor recovers
@@ -431,11 +535,13 @@ namespace meow::adaptive_bitrate {
      * @param bounds Resolved bounds for this session.
      * @param start Current time, used as the origin of the first window.
      * @param tuning Thresholds and timings; defaults are the shipping values.
+     * @param resume_kbps Bitrate carried over from a previous encoder session, clamped into
+     *        the new bounds. Zero starts at the ceiling.
      */
-    controller_t(const bounds_t bounds, const std::chrono::steady_clock::time_point start, const tuning_t tuning = {}):
+    controller_t(const bounds_t bounds, const std::chrono::steady_clock::time_point start, const tuning_t tuning = {}, const int resume_kbps = 0):
         bounds_ {bounds},
         tuning_ {tuning},
-        current_kbps_ {bounds.enabled() ? bounds.max_kbps : 0},
+        current_kbps_ {bounds.enabled() ? (resume_kbps > 0 ? std::clamp(resume_kbps, bounds.min_kbps, bounds.max_kbps) : bounds.max_kbps) : 0},
         window_start_ {start},
         last_change_ {start} {
     }
@@ -475,6 +581,12 @@ namespace meow::adaptive_bitrate {
       if (window_lost_ < cap) {
         window_lost_ += sample.packets_lost;
       }
+      // One report == one frame (or one FEC block of one frame) the client found damaged.
+      // This count, over the number of frames we actually encoded, is the signal; the packet
+      // counters above are kept only so the log line can say how bad the damage was.
+      if (window_damaged_ < cap) {
+        ++window_damaged_;
+      }
       if (!sample.frame_recovered && window_unrecovered_ < cap) {
         ++window_unrecovered_;
       }
@@ -505,26 +617,47 @@ namespace meow::adaptive_bitrate {
         return decision;
       }
 
+      // Every call is one encoded frame. Counting here rather than in a separate method keeps
+      // the denominator exactly in step with the decision, and matches the single call site.
+      if (window_frames_ < std::numeric_limits<std::uint64_t>::max() / 2) {
+        ++window_frames_;
+      }
+
       if (now - window_start_ < tuning_.window) {
         return decision;
       }
 
-      // A window with no reports at all is a clean window: the client only reports on loss.
-      const double loss = window_sent_ > 0 ? static_cast<double>(window_lost_) / static_cast<double>(window_sent_) : 0.0;
+      // The denominator is the frames WE ENCODED this window, not the packets the client
+      // happened to mention. That distinction is the whole correctness of this controller:
+      // the client reports only frames that were damaged, so dividing lost packets by
+      // reported packets measures "how bad were the bad frames", which is enormously
+      // inflated - at 8 Mbps/60fps a frame is ~19 packets, so a single lost packet in a
+      // single frame reads as 5% "loss" while real loss over the second is under 0.1%.
+      // Backing off on that would ratchet an ordinary mobile link down to the floor in
+      // seconds, which is the exact regression this feature exists to prevent.
+      //
+      // A window in which we encoded nothing carries no information; hold the streaks.
+      double damaged = 0.0;
+      if (window_frames_ > 0) {
+        damaged = static_cast<double>(window_damaged_) / static_cast<double>(window_frames_);
+        // A frame can span several FEC blocks and so produce several reports; a frame cannot
+        // be more than entirely damaged.
+        damaged = std::min(damaged, 1.0);
 
-      if (loss >= tuning_.loss_high) {
-        ++bad_windows_;
-        good_windows_ = 0;
-      } else if (loss <= tuning_.loss_low && window_unrecovered_ == 0) {
-        ++good_windows_;
-        bad_windows_ = 0;
-      } else {
-        // Dead zone: neither direction is justified, so forget any partial streak.
-        bad_windows_ = 0;
-        good_windows_ = 0;
+        if (damaged >= tuning_.damaged_high) {
+          ++bad_windows_;
+          good_windows_ = 0;
+        } else if (damaged <= tuning_.damaged_low && window_unrecovered_ == 0) {
+          ++good_windows_;
+          bad_windows_ = 0;
+        } else {
+          // Dead zone: neither direction is justified, so forget any partial streak.
+          bad_windows_ = 0;
+          good_windows_ = 0;
+        }
       }
 
-      const double observed_loss = loss;
+      const double observed_damaged = damaged;
       reset_window(now);
 
       const bool interval_elapsed = (now - last_change_) >= tuning_.min_change_interval;
@@ -537,7 +670,7 @@ namespace meow::adaptive_bitrate {
           decision.changed = true;
           decision.kbps = current_kbps_;
           decision.reason = reason_t::sustained_loss;
-          decision.observed_loss = observed_loss;
+          decision.observed_damaged = observed_damaged;
           return decision;
         }
         // Already at the floor, or the step was too small to be worth an IDR. Drop the
@@ -551,7 +684,7 @@ namespace meow::adaptive_bitrate {
           decision.changed = true;
           decision.kbps = current_kbps_;
           decision.reason = reason_t::link_clean;
-          decision.observed_loss = observed_loss;
+          decision.observed_damaged = observed_damaged;
           return decision;
         }
         good_windows_ = 0;
@@ -570,7 +703,9 @@ namespace meow::adaptive_bitrate {
       window_start_ = now;
       window_sent_ = 0;
       window_lost_ = 0;
+      window_damaged_ = 0;
       window_unrecovered_ = 0;
+      window_frames_ = 0;
     }
 
     /**
@@ -594,8 +729,12 @@ namespace meow::adaptive_bitrate {
      * @return The proposed higher bitrate in kbps.
      */
     [[nodiscard]] int step_up(const int from) const {
+      // Never propose a step that commit() will reject as too small: on a narrow range
+      // (ceiling under ~2000 kbps) a 10%-of-ceiling step is below min_step_kbps, and because
+      // back-off is exempted by landing exactly on min_kbps while recovery is not, the stream
+      // would be able to go down but never come back up.
       const auto step = static_cast<double>(bounds_.max_kbps) * tuning_.recover_fraction;
-      const int target = from + std::max(1, static_cast<int>(step));
+      const int target = from + std::max(tuning_.min_step_kbps, static_cast<int>(step));
       return std::min(target, bounds_.max_kbps);
     }
 
@@ -633,7 +772,9 @@ namespace meow::adaptive_bitrate {
 
     std::uint64_t window_sent_ = 0;  ///< Packets sent, this window.
     std::uint64_t window_lost_ = 0;  ///< Packets lost, this window.
+    std::uint64_t window_damaged_ = 0;  ///< Client reports received, this window (the numerator).
     std::uint64_t window_unrecovered_ = 0;  ///< Frames FEC could not rebuild, this window.
+    std::uint64_t window_frames_ = 0;  ///< Frames we encoded, this window (the denominator).
 
     int bad_windows_ = 0;  ///< Consecutive windows at or above `loss_high`.
     int good_windows_ = 0;  ///< Consecutive windows at or below `loss_low`.

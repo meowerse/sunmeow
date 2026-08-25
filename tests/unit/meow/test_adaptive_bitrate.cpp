@@ -13,6 +13,8 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 // local includes
@@ -28,6 +30,8 @@ namespace {
   using meow::adaptive_bitrate::loss_sample_t;
   using meow::adaptive_bitrate::max_configurable_kbps;
   using meow::adaptive_bitrate::parse_frame_fec_status;
+  using meow::adaptive_bitrate::rate_shape_t;
+  using meow::adaptive_bitrate::rates_for;
   using meow::adaptive_bitrate::reason_t;
   using meow::adaptive_bitrate::resolve_bounds;
   using meow::adaptive_bitrate::tuning_t;
@@ -92,38 +96,81 @@ namespace {
   }
 
   /**
-   * @brief Drive the controller for a number of windows at a fixed loss rate.
+   * @brief Frames the encoder produces per evaluation window in these tests.
+   *
+   * A real 60 fps stream encodes ~60 frames per 1 s window. The controller divides the number
+   * of damaged frames by this, so tests must model it or they assert against a denominator
+   * that never occurs in production.
+   */
+  constexpr int frames_per_window = 60;
+
+  /**
+   * @brief Drive the controller for a number of windows with a fixed damage rate.
+   *
+   * Each window encodes `frames_per_window` frames (one `tick()` each, which is exactly how
+   * the governor calls it) of which `damaged_frames` are reported by the client as damaged.
    *
    * @param controller Controller under test.
-   * @param now In/out clock, advanced by one window per iteration.
+   * @param now In/out clock, advanced across one window per iteration.
    * @param windows How many windows to run.
-   * @param lost Packets reported lost per window.
-   * @param sent Packets reported sent per window.
-   * @param recovered Whether FEC rebuilt the frame.
+   * @param damaged_frames How many frames per window the client reports as damaged.
+   * @param recovered Whether FEC rebuilt those frames.
    * @param tuning Tuning in use, for the window length.
+   * @param packets_per_frame Packets in a reported frame.
+   * @param lost_per_frame Packets lost in a reported frame.
    * @return Every decision that actually changed the bitrate.
    */
   std::vector<decision_t> run_windows(
     controller_t &controller,
     std::chrono::steady_clock::time_point &now,
     const int windows,
-    const std::uint32_t lost,
-    const std::uint32_t sent,
+    const int damaged_frames,
     const bool recovered,
-    const tuning_t &tuning
+    const tuning_t &tuning,
+    const std::uint32_t packets_per_frame = 19,
+    const std::uint32_t lost_per_frame = 1
   ) {
     std::vector<decision_t> changes;
-    for (int i = 0; i < windows; ++i) {
-      if (sent > 0) {
-        controller.observe(loss_sample_t {sent, lost, recovered});
-      }
-      now += tuning.window;
-      const auto d = controller.tick(now);
-      if (d.changed) {
-        changes.push_back(d);
+    const auto per_frame = tuning.window / frames_per_window;
+    for (int w = 0; w < windows; ++w) {
+      for (int f = 0; f < frames_per_window; ++f) {
+        if (f < damaged_frames) {
+          controller.observe(loss_sample_t {packets_per_frame, lost_per_frame, recovered});
+        }
+        // The last frame of the window crosses the boundary and triggers the decision.
+        now += (f + 1 == frames_per_window) ? (tuning.window - per_frame * (frames_per_window - 1)) : per_frame;
+        const auto d = controller.tick(now);
+        if (d.changed) {
+          changes.push_back(d);
+        }
       }
     }
     return changes;
+  }
+
+  /**
+   * @brief Run exactly one evaluation window and return the decision it produced.
+   *
+   * @param controller Controller under test.
+   * @param now In/out clock, advanced by one window.
+   * @param damaged_frames Frames in this window the client reports as damaged.
+   * @param recovered Whether FEC rebuilt those frames.
+   * @param tuning Tuning in use.
+   * @param packets_per_frame Packets in a reported frame.
+   * @param lost_per_frame Packets lost in a reported frame.
+   * @return The decision from the window boundary.
+   */
+  decision_t run_one_window(
+    controller_t &controller,
+    std::chrono::steady_clock::time_point &now,
+    const int damaged_frames,
+    const bool recovered,
+    const tuning_t &tuning,
+    const std::uint32_t packets_per_frame = 19,
+    const std::uint32_t lost_per_frame = 1
+  ) {
+    const auto changes = run_windows(controller, now, 1, damaged_frames, recovered, tuning, packets_per_frame, lost_per_frame);
+    return changes.empty() ? decision_t {} : changes.front();
   }
 
   // ---------------------------------------------------------------------------
@@ -240,6 +287,32 @@ namespace {
     EXPECT_FALSE(resolve_bounds(2000, 20000, -1, 0).enabled());
   }
 
+  TEST(AdaptiveBitrateBoundsTest, TheResolvedCeilingNeverExceedsAnyOfTheThreeLimits) {
+    // The governor applies this ceiling to the codec context at open time, because upstream
+    // opens the encoder at min(client, max_bitrate) and knows nothing about
+    // adaptive_bitrate_max. If this invariant ever broke, a session whose binding limit is
+    // adaptive_bitrate_max would run above its configured ceiling for its whole lifetime,
+    // since a clean link never produces a decision to bring it down.
+    for (int client = 1000; client <= 20000; client += 3000) {
+      for (const int host_max : {0, 4000, 9000, 25000}) {
+        for (const int cfg_max : {0, 5000, 12000}) {
+          const auto b = resolve_bounds(1000, cfg_max, client, host_max);
+          if (!b.enabled()) {
+            continue;
+          }
+          EXPECT_LE(b.max_kbps, client);
+          if (host_max > 0) {
+            EXPECT_LE(b.max_kbps, host_max);
+          }
+          if (cfg_max > 0) {
+            EXPECT_LE(b.max_kbps, cfg_max);
+          }
+          EXPECT_GT(b.max_kbps, b.min_kbps);
+        }
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // validate_config — hostile / mistyped configuration is corrected loudly
   // ---------------------------------------------------------------------------
@@ -349,7 +422,7 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(0, 0, 8000, 0), now, t};
     EXPECT_FALSE(c.enabled());
-    const auto changes = run_windows(c, now, 200, 900, 1000, false, t);
+    const auto changes = run_windows(c, now, 200, 55, false, t);
     EXPECT_TRUE(changes.empty());
     EXPECT_EQ(c.current_kbps(), 0);
   }
@@ -359,12 +432,9 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
-    // One bad window, then clean. A single bad sample must never move the bitrate.
-    c.observe(loss_sample_t {1000, 300, false});
-    now += t.window;
-    EXPECT_FALSE(c.tick(now).changed);
-    now += t.window;
-    EXPECT_FALSE(c.tick(now).changed);
+    // One bad window, then a clean one. A single bad window must never move the bitrate.
+    EXPECT_FALSE(run_one_window(c, now, 55, false, t).changed);
+    EXPECT_FALSE(run_one_window(c, now, 0, true, t).changed);
     EXPECT_EQ(c.current_kbps(), 8000);
   }
 
@@ -373,7 +443,7 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
-    const auto changes = run_windows(c, now, 8, 300, 1000, false, t);
+    const auto changes = run_windows(c, now, 8, 55, false, t);
     ASSERT_FALSE(changes.empty());
     EXPECT_EQ(changes.front().reason, reason_t::sustained_loss);
     EXPECT_LT(changes.front().kbps, changes.front().previous_kbps);
@@ -387,7 +457,7 @@ namespace {
 
     // Pathological: total loss forever. This is also the shape a malicious client would use
     // to try to pin the stream to zero.
-    run_windows(c, now, 2000, 1000, 1000, false, t);
+    run_windows(c, now, 2000, 60, false, t);
     EXPECT_EQ(c.current_kbps(), 2000);
     EXPECT_GT(c.current_kbps(), 0);
   }
@@ -398,7 +468,7 @@ namespace {
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
     // A perfectly clean link for a long time must sit at the ceiling, not climb past it.
-    run_windows(c, now, 2000, 0, 0, true, t);
+    run_windows(c, now, 2000, 0, true, t);
     EXPECT_EQ(c.current_kbps(), 8000);
   }
 
@@ -407,11 +477,11 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
-    run_windows(c, now, 20, 400, 1000, false, t);
+    run_windows(c, now, 20, 55, false, t);
     const int after_loss = c.current_kbps();
     ASSERT_LT(after_loss, 8000);
 
-    const auto recoveries = run_windows(c, now, 400, 0, 0, true, t);
+    const auto recoveries = run_windows(c, now, 400, 0, true, t);
     ASSERT_FALSE(recoveries.empty());
     EXPECT_EQ(recoveries.front().reason, reason_t::link_clean);
     EXPECT_GT(c.current_kbps(), after_loss);
@@ -426,10 +496,8 @@ namespace {
     controller_t down {resolve_bounds(2000, 8000, 8000, 0), now_down, t};
     int windows_to_back_off = 0;
     for (int i = 0; i < 500; ++i) {
-      down.observe(loss_sample_t {1000, 400, false});
-      now_down += t.window;
       ++windows_to_back_off;
-      if (down.tick(now_down).changed) {
+      if (run_one_window(down, now_down, 55, false, t).changed) {
         break;
       }
     }
@@ -437,12 +505,11 @@ namespace {
     // Windows needed to make the first recovery happen, from the same starting state.
     auto now_up = std::chrono::steady_clock::time_point {};
     controller_t up {resolve_bounds(2000, 8000, 8000, 0), now_up, t};
-    run_windows(up, now_up, 20, 400, 1000, false, t);
+    run_windows(up, now_up, 20, 55, false, t);
     int windows_to_recover = 0;
     for (int i = 0; i < 500; ++i) {
-      now_up += t.window;
       ++windows_to_recover;
-      if (up.tick(now_up).changed) {
+      if (run_one_window(up, now_up, 0, true, t).changed) {
         break;
       }
     }
@@ -458,7 +525,7 @@ namespace {
 
     // 2% loss: above loss_low (0.5%), below loss_high (5%). Neither direction is justified,
     // so the bitrate must not move at all — this is the band that kills oscillation.
-    const auto changes = run_windows(c, now, 600, 20, 1000, true, t);
+    const auto changes = run_windows(c, now, 600, 5, true, t);
     EXPECT_TRUE(changes.empty());
     EXPECT_EQ(c.current_kbps(), 8000);
   }
@@ -472,11 +539,7 @@ namespace {
     // reaches its threshold, so a naive controller would flip on every window.
     int changes = 0;
     for (int i = 0; i < 1000; ++i) {
-      if (i % 2 == 0) {
-        c.observe(loss_sample_t {1000, 400, false});
-      }
-      now += t.window;
-      if (c.tick(now).changed) {
+      if (run_one_window(c, now, i % 2 == 0 ? 55 : 0, i % 2 != 0, t).changed) {
         ++changes;
       }
     }
@@ -495,11 +558,7 @@ namespace {
     for (int block = 0; block < 100; ++block) {
       const bool bad = (block % 2) == 0;
       for (int i = 0; i < 12; ++i) {
-        if (bad) {
-          c.observe(loss_sample_t {1000, 500, false});
-        }
-        now += t.window;
-        if (c.tick(now).changed) {
+        if (run_one_window(c, now, bad ? 55 : 0, !bad, t).changed) {
           ++changes;
         }
       }
@@ -519,9 +578,7 @@ namespace {
 
     std::vector<std::chrono::steady_clock::time_point> change_times;
     for (int i = 0; i < 400; ++i) {
-      c.observe(loss_sample_t {1000, 900, false});
-      now += t.window;
-      if (c.tick(now).changed) {
+      if (run_one_window(c, now, 60, false, t).changed) {
         change_times.push_back(now);
       }
     }
@@ -542,11 +599,13 @@ namespace {
     // send it. The accumulators must saturate rather than wrap into a state that inverts a
     // comparison, and the output must stay inside the configured bounds.
     for (int i = 0; i < 400; ++i) {
-      for (int j = 0; j < 500; ++j) {
+      // 500 maximum-magnitude reports per frame: far more than any honest client sends, which
+      // is the point - the accumulators must saturate rather than wrap into a state that
+      // inverts a comparison.
+      run_one_window(c, now, frames_per_window, false, t, 131070, 131070);
+      for (int j = 0; j < 499; ++j) {
         c.observe(loss_sample_t {131070, 131070, false});
       }
-      now += t.window;
-      c.tick(now);
       EXPECT_GE(c.current_kbps(), 2000);
       EXPECT_LE(c.current_kbps(), 8000);
     }
@@ -562,7 +621,7 @@ namespace {
     now -= 30min;
     EXPECT_FALSE(c.tick(now).changed);
 
-    const auto changes = run_windows(c, now, 20, 500, 1000, false, t);
+    const auto changes = run_windows(c, now, 20, 55, false, t);
     EXPECT_FALSE(changes.empty()) << "controller stopped adapting after a backwards clock jump";
   }
 
@@ -571,15 +630,12 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
-    run_windows(c, now, 20, 500, 1000, false, t);
+    run_windows(c, now, 20, 55, false, t);
     const int after_loss = c.current_kbps();
     ASSERT_LT(after_loss, 8000);
 
     // The client only reports when something went wrong, so silence is the clean signal.
-    for (int i = 0; i < 400; ++i) {
-      now += t.window;
-      c.tick(now);
-    }
+    run_windows(c, now, 400, 0, true, t);
     EXPECT_GT(c.current_kbps(), after_loss);
   }
 
@@ -588,12 +644,12 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
-    run_windows(c, now, 20, 500, 1000, false, t);
+    run_windows(c, now, 20, 55, false, t);
     const int after_loss = c.current_kbps();
 
     // Loss fraction is tiny (below loss_low) but FEC failed outright every window: the user
     // is seeing dropped frames, so climbing back up would be wrong.
-    const auto changes = run_windows(c, now, 400, 1, 100000, false, t);
+    const auto changes = run_windows(c, now, 400, 1, false, t);
     EXPECT_TRUE(changes.empty());
     EXPECT_EQ(c.current_kbps(), after_loss);
   }
@@ -603,13 +659,167 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
-    const auto changes = run_windows(c, now, 40, 500, 1000, false, t);
+    const auto changes = run_windows(c, now, 40, 55, false, t);
     ASSERT_FALSE(changes.empty());
     for (const auto &d : changes) {
       EXPECT_NE(d.kbps, d.previous_kbps);
       EXPECT_NE(d.reason, reason_t::none);
       EXPECT_FALSE(meow::adaptive_bitrate::describe(d.reason).empty());
     }
+  }
+
+  TEST(AdaptiveBitrateControllerTest, AnOrdinaryMobileLinkIsNotRatchetedToTheFloor) {
+    // THE regression this controller exists to avoid, and the reason the denominator is
+    // frames-encoded rather than packets-reported.
+    //
+    // One FEC-recovered frame per second on a 60 fps stream is an entirely ordinary mobile
+    // link: the frame was fully repaired, the user saw nothing. At 8 Mbps a frame is ~19
+    // packets, so measuring "lost packets / reported packets" reads 1/19 = 5.3% and trips a
+    // 5% threshold, ratcheting 8000 -> 3000 kbps in about eleven seconds. Measuring
+    // "damaged frames / frames encoded" reads 1/60 = 1.7% and correctly leaves it alone.
+    const auto t = fast_tuning();
+    auto now = std::chrono::steady_clock::time_point {};
+    controller_t c {resolve_bounds(3000, 8000, 8000, 0), now, t};
+
+    const auto changes = run_windows(c, now, 300, 1, true, t, 19, 1);
+
+    for (const auto &d : changes) {
+      EXPECT_GE(d.kbps, d.previous_kbps)
+        << "backed off on a link losing ~0.1% of packets: " << d.previous_kbps << " -> " << d.kbps;
+    }
+    EXPECT_EQ(c.current_kbps(), 8000) << "an ordinary mobile link must stay at the ceiling";
+  }
+
+  TEST(AdaptiveBitrateControllerTest, StillBacksOffWhenMostFramesAreDamaged) {
+    // The other side of the same coin: the frame-based denominator must not make the
+    // controller blind. Most frames damaged is a genuinely overloaded link.
+    const auto t = fast_tuning();
+    auto now = std::chrono::steady_clock::time_point {};
+    controller_t c {resolve_bounds(3000, 8000, 8000, 0), now, t};
+
+    run_windows(c, now, 40, 40, false, t);
+    EXPECT_LT(c.current_kbps(), 8000);
+  }
+
+  TEST(AdaptiveBitrateControllerTest, RecoversAcrossANarrowRangeToo) {
+    // step_up() proposes a fraction of the ceiling; commit() rejects steps below
+    // min_step_kbps unless they land on a bound. Back-off gets that exemption by landing on
+    // min_kbps, so without a floor on the proposed step a narrow range could go down but
+    // never come back up.
+    const auto t = fast_tuning();
+    for (const auto [lo, hi] : std::vector<std::pair<int, int>> {{900, 1900}, {500, 1500}, {1000, 1900}, {500, 1900}}) {
+      auto now = std::chrono::steady_clock::time_point {};
+      controller_t c {resolve_bounds(lo, hi, hi, 0), now, t};
+      ASSERT_TRUE(c.enabled()) << lo << "/" << hi;
+
+      run_windows(c, now, 40, 55, false, t);
+      ASSERT_LT(c.current_kbps(), hi) << lo << "/" << hi << " never backed off";
+
+      run_windows(c, now, 600, 0, true, t);
+      EXPECT_EQ(c.current_kbps(), hi)
+        << "range " << lo << "/" << hi << " could go down but not come back up";
+    }
+  }
+
+  TEST(AdaptiveBitrateControllerTest, ResumesFromARememberedBitrateAcrossAReinit) {
+    // encode_run() is re-entered on every capture reinit, destroying the governor. A session
+    // that had backed off must not snap back to the ceiling and re-converge from scratch.
+    const auto t = fast_tuning();
+    auto now = std::chrono::steady_clock::time_point {};
+    controller_t first {resolve_bounds(2000, 8000, 8000, 0), now, t};
+    run_windows(first, now, 40, 55, false, t);
+    const int carried = first.current_kbps();
+    ASSERT_LT(carried, 8000);
+
+    controller_t second {resolve_bounds(2000, 8000, 8000, 0), now, t, carried};
+    EXPECT_EQ(second.current_kbps(), carried);
+  }
+
+  TEST(AdaptiveBitrateControllerTest, AResumedBitrateIsClampedIntoTheNewBounds) {
+    // The remembered value comes from a previous session whose ceiling may have been
+    // different (the client can renegotiate on reinit), so it is not trusted blind.
+    const auto t = fast_tuning();
+    const auto now = std::chrono::steady_clock::time_point {};
+    const auto bounds = resolve_bounds(2000, 5000, 5000, 0);
+
+    EXPECT_EQ(controller_t(bounds, now, t, 99999).current_kbps(), bounds.max_kbps);
+    EXPECT_EQ(controller_t(bounds, now, t, 1).current_kbps(), bounds.min_kbps);
+    EXPECT_EQ(controller_t(bounds, now, t, 0).current_kbps(), bounds.max_kbps);
+    EXPECT_EQ(controller_t(bounds, now, t, -50).current_kbps(), bounds.max_kbps);
+  }
+
+  // ---------------------------------------------------------------------------
+  // rate_shape_t / rates_for — the math that actually writes to the encoder
+  // ---------------------------------------------------------------------------
+
+  TEST(AdaptiveBitrateRateShapeTest, PreservesCbrShape) {
+    // video.cpp CBR path: bit_rate == rc_max_rate == rc_min_rate, VBV one frame.
+    const auto shape = rate_shape_t::capture(8000000, 8000000, 8000000, 8000000 / 60);
+    EXPECT_TRUE(shape.cbr);
+    EXPECT_EQ(shape.vbr_offset, 0);
+
+    const auto r = rates_for(shape, 3000);
+    EXPECT_EQ(r.bit_rate, 3000000);
+    EXPECT_EQ(r.rc_max_rate, 3000000);
+    EXPECT_EQ(r.rc_min_rate, 3000000) << "CBR must stay CBR after a change";
+    EXPECT_NEAR(r.rc_buffer_size, 3000000 / 60, 2) << "VBV must scale with the bitrate";
+  }
+
+  TEST(AdaptiveBitrateRateShapeTest, PreservesTheForcedVbrOffset) {
+    // video.cpp CBR_WITH_VBR path: bit_rate = rc_max_rate - 1 to force VBR mode, and
+    // rc_min_rate is left at 0. Losing that -1 would silently switch the encoder's mode.
+    const auto shape = rate_shape_t::capture(8000000 - 1, 8000000, 0, 8000000 / 60);
+    EXPECT_FALSE(shape.cbr);
+    EXPECT_EQ(shape.vbr_offset, 1);
+
+    const auto r = rates_for(shape, 3000);
+    EXPECT_EQ(r.rc_max_rate, 3000000);
+    EXPECT_EQ(r.bit_rate, 2999999) << "rc_max_rate != bit_rate is what forces VBR";
+    EXPECT_EQ(r.rc_min_rate, 0) << "must not pin rc_min_rate on a VBR session";
+  }
+
+  TEST(AdaptiveBitrateRateShapeTest, PreservesAnEnlargedVbvBuffer) {
+    // nvenc vbv_percentage_increase = 40 enlarges the buffer by 40%. Re-deriving the buffer
+    // as bitrate/framerate instead of scaling it would silently discard that setting.
+    const auto base = 8000000 / 60;
+    const auto enlarged = base + base * 40 / 100;
+    const auto shape = rate_shape_t::capture(8000000, 8000000, 8000000, enlarged);
+
+    const auto r = rates_for(shape, 4000);
+    EXPECT_NEAR(r.rc_buffer_size, enlarged / 2, 2) << "the 40% enlargement must survive";
+    EXPECT_GT(r.rc_buffer_size, 4000000 / 60) << "buffer collapsed back to one frame";
+  }
+
+  TEST(AdaptiveBitrateRateShapeTest, LeavesAnUnlimitedBufferAlone) {
+    // NO_RC_BUF_LIMIT encoders open with rc_buffer_size == 0.
+    const auto shape = rate_shape_t::capture(8000000, 8000000, 8000000, 0);
+    EXPECT_DOUBLE_EQ(shape.buffer_ratio, 0.0);
+    EXPECT_EQ(rates_for(shape, 3000).rc_buffer_size, 0);
+  }
+
+  TEST(AdaptiveBitrateRateShapeTest, ARoundTripAtTheOpeningRateIsIdentity) {
+    // Applying the opening bitrate must reproduce the opening values exactly, or the very
+    // first adjustment would perturb the encoder for no reason.
+    for (const auto [bit_rate, max_rate, min_rate, buf] :
+         std::vector<std::tuple<std::int64_t, std::int64_t, std::int64_t, int>> {
+           {8000000, 8000000, 8000000, 8000000 / 60},
+           {7999999, 8000000, 0, 8000000 / 60},
+           {8000000, 8000000, 8000000, 0},
+         }) {
+      const auto shape = rate_shape_t::capture(bit_rate, max_rate, min_rate, buf);
+      const auto r = rates_for(shape, 8000);
+      EXPECT_EQ(r.bit_rate, bit_rate);
+      EXPECT_EQ(r.rc_max_rate, max_rate);
+      EXPECT_EQ(r.rc_min_rate, min_rate);
+      EXPECT_NEAR(r.rc_buffer_size, buf, 1);
+    }
+  }
+
+  TEST(AdaptiveBitrateRateShapeTest, ASessionWithNoRateLimitCapturesNothing) {
+    const auto shape = rate_shape_t::capture(0, 0, 0, 0);
+    EXPECT_FALSE(shape.cbr);
+    EXPECT_EQ(shape.vbr_offset, 0);
+    EXPECT_DOUBLE_EQ(shape.buffer_ratio, 0.0);
   }
 
   TEST(AdaptiveBitrateControllerTest, EndToEndFromParsedReportsMatchesTheTrajectory) {
@@ -620,12 +830,17 @@ namespace {
     controller_t c {resolve_bounds(2000, 8000, 8000, 0), now, t};
 
     const auto lossy = make_report(800, 200, 400, 100);  // 500 of 1000 lost
-    for (int i = 0; i < 20; ++i) {
-      const auto sample = parse_frame_fec_status(lossy);
-      ASSERT_TRUE(sample.has_value());
-      c.observe(*sample);
-      now += t.window;
-      c.tick(now);
+    const auto per_frame = t.window / frames_per_window;
+    for (int w = 0; w < 20; ++w) {
+      for (int f = 0; f < frames_per_window; ++f) {
+        if (f < 55) {
+          const auto sample = parse_frame_fec_status(lossy);
+          ASSERT_TRUE(sample.has_value());
+          c.observe(*sample);
+        }
+        now += (f + 1 == frames_per_window) ? (t.window - per_frame * (frames_per_window - 1)) : per_frame;
+        c.tick(now);
+      }
     }
     EXPECT_LT(c.current_kbps(), 8000);
     EXPECT_GE(c.current_kbps(), 2000);
