@@ -159,6 +159,12 @@ Three consequences worth knowing:
   otherwise successive pans would compose multiplicatively and walk the view off the
   desktop.
 
+  This is the contract the client has to hold up. Once it resets its local zoom to 1:1
+  because a crop landed, it must keep sending **the same reference-frame rectangle**, not
+  the rectangle it is now displaying — which is the whole frame, and which this host reads
+  as "stop cropping". Repeating an identical request is idempotent here precisely because
+  the reference frame does not move under it.
+
 ### The echo, and closing the gap permanently
 
 The echo is **load-bearing, not informational**. Without it a host that crops leaves the
@@ -255,6 +261,14 @@ A stale crop cannot leak forward:
 - the owning-scaler check means a scaler only ever acts on state it published itself;
 - with no rectangle pending, the owner's plan **is** the full-frame plan, so a scaler that
   was cropped reverts on the very next frame rather than waiting for a reinit.
+
+On a host whose encoder never takes the software scaling path at all, `on_scaler_init()` is
+never called, nothing ever claims the state, and the host correctly stays silent rather than
+echoing a crop it did not apply. The one residual gap is a broadcast that runs a software
+session and then a non-software one *without* the broadcast restarting: the second session
+would be answered against the first's geometry. That needs the encoder choice to change
+mid-broadcast, which it cannot — it is fixed by host config and probed once — so it is
+recorded here rather than defended against with another hook on the hot path.
 
 ## Cost per frame
 

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -648,6 +649,41 @@ TEST(MeowViewportReference, RoundTripsWithinOneEncodedPixel) {
 }
 
 /**
+ * @brief Extreme integers do not overflow on the way through the transform.
+ *
+ * `parse_payload()` can only produce `uint16`s, so the wire cannot reach these values today.
+ * `to_desktop()` is a public entry point on a hostile-input path, though, and `x + width` on
+ * two `INT_MAX`s is undefined behaviour rather than a large number — so the far edges are
+ * computed in 64 bits and this pins that.
+ */
+TEST(MeowViewportReference, ExtremeIntegersDoNotOverflow) {
+  constexpr int big = std::numeric_limits<int>::max();
+  constexpr int small = std::numeric_limits<int>::min();
+
+  const std::vector<rect_t> extremes {
+    {big, big, big, big},
+    {0, 0, big, big},
+    {big, 0, big, 1},
+    {small, small, big, big},
+    {0, 0, small, small},
+    {-1, -1, big, big},
+  };
+
+  for (const auto &r : extremes) {
+    const auto mapped = to_desktop(r, desktop_w, desktop_h, surface_w, surface_h);
+    if (!mapped) {
+      continue;
+    }
+    EXPECT_GE(mapped->x, 0) << r.x << ',' << r.y;
+    EXPECT_GE(mapped->y, 0) << r.x << ',' << r.y;
+    EXPECT_GT(mapped->width, 0) << r.x << ',' << r.y;
+    EXPECT_GT(mapped->height, 0) << r.x << ',' << r.y;
+    EXPECT_LE(mapped->x + mapped->width, desktop_w) << r.x << ',' << r.y;
+    EXPECT_LE(mapped->y + mapped->height, desktop_h) << r.x << ',' << r.y;
+  }
+}
+
+/**
  * @brief Every reference-frame rectangle maps inside the desktop, however hostile.
  */
 TEST(MeowViewportReference, MappingNeverEscapesTheDesktop) {
@@ -1191,6 +1227,101 @@ TEST(MeowViewportSession, ShortFrameTightensTheClamp) {
   ASSERT_TRUE(gone.has_value());
   EXPECT_FALSE(gone->cropped);
   EXPECT_EQ(*gone, full_frame_plan(desktop_w, desktop_h, surface_w, surface_h));
+
+  meow::viewport::reset();
+}
+
+/**
+ * @brief A host with no software scaler stays silent rather than promising a crop.
+ *
+ * On an NVIDIA host the encoder takes the CUDA scaler, `on_scaler_init()` is never called,
+ * and nothing claims the state. Answering anyway would be a lie the client acts on: it would
+ * reset its local zoom to 1:1 for a crop that never happened, leaving the user staring at the
+ * whole desktop unzoomed.
+ */
+TEST(MeowViewportSession, UnclaimedStateProducesNoEcho) {
+  meow::viewport::reset();
+
+  const auto payload = make_payload(1, 0, 640, 188, 640, 343);
+  EXPECT_FALSE(meow::viewport::apply_request(payload).has_value());
+  EXPECT_EQ(meow::viewport::detail::requested.load(), 0u) << "nothing may be published either";
+
+  // Once a scaler claims it, the same bytes are answered.
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  const auto echoed = meow::viewport::apply_request(payload);
+  ASSERT_TRUE(echoed.has_value());
+  EXPECT_EQ(echoed->applied, (rect_t {640, 188, 640, 343}));
+  EXPECT_EQ(echoed->capture_width, desktop_w);
+  EXPECT_EQ(echoed->capture_height, desktop_h);
+  EXPECT_NE(meow::viewport::detail::requested.load(), 0u);
+
+  meow::viewport::reset();
+}
+
+/**
+ * @brief A request the host refuses publishes nothing and leaves the stream uncropped.
+ *
+ * Driven through the real state machine rather than the pure function, so the store on the
+ * "refused" path is covered too — a leftover rectangle here would crop the stream to
+ * something the client was told it would not get.
+ */
+TEST(MeowViewportSession, RefusedRequestClearsWhatWasPublished) {
+  meow::viewport::reset();
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  ASSERT_TRUE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+
+  // Now a rectangle covering the whole encoded frame: "not zoomed in", so stop cropping.
+  const auto echoed = meow::viewport::apply_request(make_payload(1, 0, 0, 0, surface_w, surface_h));
+  ASSERT_TRUE(echoed.has_value());
+  EXPECT_EQ(meow::viewport::detail::requested.load(), 0u);
+  EXPECT_FALSE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+
+  // ... and an unparseable one does the same rather than stranding the previous crop.
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343)).has_value());
+  ASSERT_TRUE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+  EXPECT_TRUE(meow::viewport::apply_request("garbage").has_value());
+  EXPECT_EQ(meow::viewport::detail::requested.load(), 0u);
+  EXPECT_FALSE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+
+  meow::viewport::reset();
+}
+
+/**
+ * @brief Repeating the same request is idempotent, because the reference frame does not move.
+ *
+ * The client keeps reporting the region it wants while a crop is already applied. If the
+ * reference frame were defined against the *current* framing rather than the uncropped one,
+ * that identical request would mean a different desktop region every time and the view would
+ * walk off the screen. This fails if anybody makes the coordinate transform — or the plan —
+ * consult the crop that is currently in force.
+ */
+TEST(MeowViewportSession, RepeatingTheSameRequestIsIdempotent) {
+  meow::viewport::reset();
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+
+  const auto payload = make_payload(1, 0, 640, 188, 640, 343);
+
+  const auto first = evaluate_request(payload, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(first.publish.has_value());
+  meow::viewport::detail::requested.store(meow::viewport::detail::pack(*first.publish));
+
+  const auto plan_while_cropped = meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(plan_while_cropped.has_value());
+  ASSERT_TRUE(plan_while_cropped->cropped);
+
+  // Same bytes, crop already in force: same answer, in both coordinate systems.
+  const auto second = evaluate_request(payload, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_EQ(second, first);
+
+  meow::viewport::detail::requested.store(meow::viewport::detail::pack(*second.publish));
+  const auto plan_again = meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(plan_again.has_value());
+  EXPECT_EQ(*plan_again, *plan_while_cropped);
 
   meow::viewport::reset();
 }

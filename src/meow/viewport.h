@@ -430,10 +430,15 @@ namespace meow::viewport {
 
     // Intersect with the part of the surface that actually shows desktop. A request that
     // is entirely padding is refused rather than being slid onto the nearest real pixels.
-    const auto left = std::max(in_frame.x, ref.content_x);
-    const auto top = std::max(in_frame.y, ref.content_y);
-    const auto right = std::min(in_frame.x + in_frame.width, ref.content_x + ref.content_width);
-    const auto bottom = std::min(in_frame.y + in_frame.height, ref.content_y + ref.content_height);
+    //
+    // Widened to 64 bits for the far edges. Everything the wire can produce fits in an int
+    // (`parse_payload` yields `uint16`s), but this is a public entry point on a hostile-input
+    // path, and `x + width` on two `INT_MAX`s is undefined behaviour rather than a big
+    // number. The intersection below then bounds every value back into the surface.
+    const auto left = std::max<std::int64_t>(in_frame.x, ref.content_x);
+    const auto top = std::max<std::int64_t>(in_frame.y, ref.content_y);
+    const auto right = std::min<std::int64_t>(static_cast<std::int64_t>(in_frame.x) + in_frame.width, static_cast<std::int64_t>(ref.content_x) + ref.content_width);
+    const auto bottom = std::min<std::int64_t>(static_cast<std::int64_t>(in_frame.y) + in_frame.height, static_cast<std::int64_t>(ref.content_y) + ref.content_height);
     if (right <= left || bottom <= top) {
       return std::nullopt;
     }
@@ -441,10 +446,10 @@ namespace meow::viewport {
     const auto sx = static_cast<double>(capture_width) / static_cast<double>(ref.content_width);
     const auto sy = static_cast<double>(capture_height) / static_cast<double>(ref.content_height);
 
-    const auto dx = static_cast<int>(std::floor((left - ref.content_x) * sx));
-    const auto dy = static_cast<int>(std::floor((top - ref.content_y) * sy));
-    const auto dr = static_cast<int>(std::ceil((right - ref.content_x) * sx));
-    const auto db = static_cast<int>(std::ceil((bottom - ref.content_y) * sy));
+    const auto dx = static_cast<int>(std::floor(static_cast<double>(left - ref.content_x) * sx));
+    const auto dy = static_cast<int>(std::floor(static_cast<double>(top - ref.content_y) * sy));
+    const auto dr = static_cast<int>(std::ceil(static_cast<double>(right - ref.content_x) * sx));
+    const auto db = static_cast<int>(std::ceil(static_cast<double>(bottom - ref.content_y) * sy));
 
     rect_t out;
     out.x = std::clamp(dx, 0, capture_width - 1);

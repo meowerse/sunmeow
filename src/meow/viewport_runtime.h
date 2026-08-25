@@ -221,13 +221,21 @@ namespace meow::viewport {
    *
    * Runs on the control thread.
    *
+   * Split from `on_request()` so the state machine can be driven in a unit test. The
+   * config gate reads a file once into a function-local static, which a test cannot
+   * influence — folding it in here would make every test of this function pass
+   * vacuously, which is worse than not testing it (CLAUDE.md §5).
+   *
    * @param payload Control-stream payload, excluding the header.
-   * @return What to send back, or `std::nullopt` when nothing can be reported — the
-   *         feature is off, or no scaler has published its geometry, in which case we do
-   *         not even know the coordinate system an answer would be in.
+   * @return What to send back, or `std::nullopt` when nothing can be reported — no scaler
+   *         has published its geometry, in which case we do not even know the coordinate
+   *         system an answer would be in.
    */
-  [[nodiscard]] inline std::optional<echo_t> on_request(const std::string_view payload) {
-    if (!following_enabled()) {
+  [[nodiscard]] inline std::optional<echo_t> apply_request(const std::string_view payload) {
+    // Acquire on `owner` first, then read `geometry`. `on_scaler_init()` writes the geometry
+    // before releasing the owner, so this ordering is what guarantees the two are a matched
+    // pair rather than a torn read across an encoder reinit.
+    if (detail::owner.load(std::memory_order_acquire) == nullptr) {
       return std::nullopt;
     }
 
@@ -251,6 +259,24 @@ namespace meow::viewport {
       return std::nullopt;
     }
     return echo_t {*outcome.echo, capture_width, capture_height};
+  }
+
+  /**
+   * @brief `apply_request()`, gated on the host configuration.
+   *
+   * The entry point `src/stream.cpp` registers. When the feature is off this does nothing
+   * at all — no state is written and no echo is sent — so a client that speaks the
+   * extension against a host that has not opted in gets today's behaviour and can tell,
+   * from the absence of an echo, that its request was not honoured.
+   *
+   * @param payload Control-stream payload, excluding the header.
+   * @return What to send back, or `std::nullopt`.
+   */
+  [[nodiscard]] inline std::optional<echo_t> on_request(const std::string_view payload) {
+    if (!following_enabled()) {
+      return std::nullopt;
+    }
+    return apply_request(payload);
   }
 
   /**
