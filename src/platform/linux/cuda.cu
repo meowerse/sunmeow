@@ -173,7 +173,10 @@ namespace cuda {
     std::uint8_t *dstUV,
     std::uint32_t dstPitchY,
     std::uint32_t dstPitchUV,
-    float scale,
+    // MEOW-TOUCH(viewport-cuda): was `float scale`. `source` carries a source origin as well
+    // as a per-axis step, which is what a crop needs; `{0, 0, scale, scale}` is the old
+    // behaviour exactly, because `0.0f + v` is `v` for every finite float.
+    const source_t source,
     const viewport_t viewport,
     const cuda_color_t *const color_matrix
   ) {
@@ -187,8 +190,11 @@ namespace cuda {
       return;
     }
 
-    float x = idX * scale;
-    float y = idY * scale;
+    // MEOW-TOUCH(viewport-cuda): `source` is the rectangle of the captured frame being read;
+    // `viewport` below is still where the result lands in the encode surface. The two are
+    // different coordinate systems and are never mixed.
+    float x = source.originX + idX * source.stepX;
+    float y = source.originY + idY * source.stepY;
 
     idX += viewport.offsetX;
     idY += viewport.offsetY;
@@ -197,10 +203,12 @@ namespace cuda {
     uint8_t *dstY1 = dstY + idX + (idY + 1) * dstPitchY;
     dstUV = dstUV + idX + (idY / 2 * dstPitchUV);
 
+    // MEOW-TOUCH(viewport-cuda): one source step per axis, so the 2x2 block still covers
+    // exactly the source pixels this destination block represents after a crop.
     float3 rgb_lt = bgra_to_rgb(tex2D<float4>(srcImage, x, y));
-    float3 rgb_rt = bgra_to_rgb(tex2D<float4>(srcImage, x + scale, y));
-    float3 rgb_lb = bgra_to_rgb(tex2D<float4>(srcImage, x, y + scale));
-    float3 rgb_rb = bgra_to_rgb(tex2D<float4>(srcImage, x + scale, y + scale));
+    float3 rgb_rt = bgra_to_rgb(tex2D<float4>(srcImage, x + source.stepX, y));
+    float3 rgb_lb = bgra_to_rgb(tex2D<float4>(srcImage, x, y + source.stepY));
+    float3 rgb_rb = bgra_to_rgb(tex2D<float4>(srcImage, x + source.stepX, y + source.stepY));
 
     float2 uv_lt = calcUV(rgb_lt, color_matrix) * 256.0f;
     float2 uv_rt = calcUV(rgb_rt, color_matrix) * 256.0f;
@@ -223,7 +231,8 @@ namespace cuda {
     std::uint8_t *dstU,
     std::uint8_t *dstV,
     std::uint32_t dstPitchY,
-    float scale,
+    // MEOW-TOUCH(viewport-cuda): was `float scale`; see RGBA_to_NV12 above.
+    const source_t source,
     const viewport_t viewport,
     const cuda_color_t *const color_matrix
   ) {
@@ -237,8 +246,9 @@ namespace cuda {
       return;
     }
 
-    float x = idX * scale;
-    float y = idY * scale;
+    // MEOW-TOUCH(viewport-cuda): source rectangle, not destination placement.
+    float x = source.originX + idX * source.stepX;
+    float y = source.originY + idY * source.stepY;
 
     idX += viewport.offsetX;
     idY += viewport.offsetY;
@@ -346,6 +356,10 @@ namespace cuda {
     viewport.offsetY = offsetY_f;
 
     scale = 1.0f / scalar;
+
+    // MEOW-TOUCH(viewport-cuda): the uncropped source map. Reading the whole captured frame
+    // from its origin at one step per axis is exactly what `scale` alone used to mean.
+    source = {0.0f, 0.0f, scale, scale};
   }
 
   std::optional<sws_t> sws_t::make(int in_width, int in_height, int out_width, int out_height, int pitch) {
@@ -373,7 +387,9 @@ namespace cuda {
     dim3 block(threadsPerBlock);
     dim3 grid(div_align(threadsX, threadsPerBlock), threadsY);
 
-    RGBA_to_NV12<<<grid, block, 0, stream>>>(texture, Y, UV, pitchY, pitchUV, scale, viewport, (cuda_color_t *) color_matrix.get());
+    // MEOW-TOUCH(viewport-cuda): `source` replaces `scale`; it is a member like `scale` was,
+    // so both `convert_nv12` overloads keep their signatures and their meaning.
+    RGBA_to_NV12<<<grid, block, 0, stream>>>(texture, Y, UV, pitchY, pitchUV, source, viewport, (cuda_color_t *) color_matrix.get());
 
     return CU_CHECK_IGNORE(cudaGetLastError(), "RGBA_to_NV12 failed");
   }
@@ -395,7 +411,7 @@ namespace cuda {
       U,
       V,
       pitch,
-      scale,
+      source,  // MEOW-TOUCH(viewport-cuda): replaces `scale`; see RGBA_to_NV12 above.
       viewport,
       (cuda_color_t *) color_matrix.get()
     );

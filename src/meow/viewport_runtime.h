@@ -176,9 +176,9 @@ namespace meow::viewport {
    *  2. CLAUDE.md's compatibility floor: an existing working setup must not change
    *     behaviour on upgrade. A user who never edits their config gets exactly the stream
    *     they had yesterday.
-   *  3. It only takes effect on the software scaling path today (see the coverage note in
-   *     `configure_scaler()`), so defaulting it on would advertise a feature that silently
-   *     does nothing on the VA-API and CUDA paths.
+   *  3. It does not cover every scaling path (see the coverage note in `configure_scaler()`).
+   *     The software and CUDA/NVENC scalers crop; VA-API does not, so on those hosts the
+   *     setting would advertise a feature that silently does nothing.
    *
    * @return `true` when `meow_viewport_following` is enabled.
    */
@@ -359,7 +359,8 @@ namespace meow::viewport {
    * initialised with and never looks at `img.width`/`img.height` again, so deriving the
    * uncropped plan from anything else would silently resize the scaler for a backend whose
    * captured images do not match. The frame in hand is used only to *tighten* the clamp on
-   * the requested rectangle, so the pointer arithmetic can never leave a short buffer.
+   * the requested rectangle, so the pointer arithmetic -- or, on the CUDA path, the texture
+   * sampling -- can never leave a short buffer.
    *
    * Returns `std::nullopt` for "do not touch this scaler at all":
    *
@@ -420,12 +421,14 @@ namespace meow::viewport {
    * filter tables are not rebuilt on a frame where nothing moved.
    *
    * **Coverage.** This is the software scaling path -- the one taken when the capture
-   * backend hands system memory to an encoder that does not scale on the GPU. The VA-API
-   * (`src/platform/linux/graphics.cpp`, `egl::sws_t`) and CUDA
-   * (`src/platform/linux/cuda.cu`) scalers have their own source-to-destination mapping
-   * and are **not** cropped by this change. `plan_t` is shaped to drive them too -- both
-   * already carry a destination viewport and a scale factor -- but wiring them up means
-   * editing a GLSL shader and a CUDA kernel, which is a separate change.
+   * backend hands system memory to an encoder that does not scale on the GPU. The CUDA /
+   * NVENC scaler (`src/platform/linux/cuda.cu`) honours the same `plan_t` through
+   * `src/meow/viewport_cuda.h`, which turns it into a source origin and a per-axis step for
+   * the conversion kernel; that path calls `plan_for_frame()` directly rather than coming
+   * through here, because it has no `AVFrame`s to reconfigure. The VA-API scaler
+   * (`src/platform/linux/graphics.cpp`, `egl::sws_t`) has its own source-to-destination
+   * mapping and is still **not** cropped: it needs the same treatment applied to a GLSL
+   * shader, which is a separate change.
    *
    * @param planned Plan to apply; `std::nullopt` leaves the scaler untouched.
    * @param sws_input Scaler input frame; its width and height are updated.

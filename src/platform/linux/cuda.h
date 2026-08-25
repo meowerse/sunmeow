@@ -75,6 +75,29 @@ namespace cuda {
     int offsetY;
   };
 
+  /**
+   * @brief MEOW-TOUCH(viewport-cuda): where the scaler reads from, in captured texels.
+   *
+   * `viewport_t` above is a **destination** rectangle -- where the scaled image lands inside
+   * the encode surface. This is the other half of the mapping and is purely **source** space:
+   * the texel the first destination pixel samples, and how far the sample point advances per
+   * destination pixel. Keeping them apart is the point; an offset added to the wrong one is
+   * silent and looks like a scaling bug.
+   *
+   * Upstream's single `sws_t::scale` is the special case `{0, 0, scale, scale}`. The step is
+   * per axis because a crop's scaled extents are even-aligned independently
+   * (`meow::viewport::plan()`), after which the two axis ratios genuinely differ.
+   *
+   * Geometry, validation and the bounds proof live in `src/meow/viewport_cuda.h` and are unit
+   * tested without a GPU.
+   */
+  struct source_t {
+    float originX;  ///< Texel column sampled by the first destination column.
+    float originY;  ///< Texel row sampled by the first destination row.
+    float stepX;  ///< Texel columns advanced per destination column.
+    float stepY;  ///< Texel rows advanced per destination row.
+  };
+
   class tex_t {
   public:
     static std::optional<tex_t> make(int height, int pitch);
@@ -126,6 +149,16 @@ namespace cuda {
     viewport_t viewport;
 
     float scale;
+
+    /**
+     * @brief MEOW-TOUCH(viewport-cuda): source sampling map used by the conversion kernels.
+     *
+     * Initialised by the constructor to `{0, 0, scale, scale}`, which is bit-identical to the
+     * mapping upstream computed from `scale` alone. `cuda_t::convert()` overwrites it once
+     * per frame from `meow::viewport::cuda_scaler_config()` when the client has asked for a
+     * crop, and puts the baseline back when it has not.
+     */
+    source_t source;
   };
 }  // namespace cuda
 

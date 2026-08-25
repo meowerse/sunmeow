@@ -1,6 +1,6 @@
 # Viewport following ("foveated" streaming)
 
-**Status:** host side, software scaling path only. Off by default.
+**Status:** host side, software and CUDA/NVENC scaling paths. VA-API not covered. Off by default.
 
 ## The problem
 
@@ -65,43 +65,99 @@ merely quiet, and a viewport packet from a client that speaks the extension fall
    needs the matching host-side remap. Relative mouse input is unaffected.
 2. **The compatibility floor.** An existing working setup must not change behaviour on
    upgrade (CLAUDE.md §2). Nobody's stream changes until they ask for it.
-3. **It only covers one scaling path today** — see below. Defaulting it on would advertise a
-   feature that silently does nothing for VA-API and CUDA users.
+3. **It does not cover every scaling path** — see below. Software and CUDA/NVENC crop;
+   VA-API does not, so on those hosts the setting would advertise a feature that silently
+   does nothing.
 
 ## What is covered, and what is not
 
 | Path | File | Cropped? |
 | --- | --- | --- |
 | Software scaling (swscale) | `src/video.cpp`, `avcodec_software_encode_device_t::convert()` | **yes** |
+| CUDA / NVENC (`cuda_ram_t`, `cuda_vram_t`, NvFBC) | `src/platform/linux/cuda.cu`, `cuda.cpp` | **yes** |
+| CUDA via GL dmabuf import (`gl_cuda_vram_t`) | `src/platform/linux/cuda.cpp`, `egl::sws_t` | no |
 | VA-API / EGL | `src/platform/linux/graphics.cpp`, `egl::sws_t` | no |
-| CUDA / NVENC | `src/platform/linux/cuda.cu` | no |
 | Windows, macOS | — | no |
 
-> **On the machine this was developed against, viewport following does nothing today.**
-> Verified by running the built binary: with `capture = kwin` the host selects
-> `h264_nvenc`/`hevc_nvenc`/`av1_nvenc`, which takes `mem_type_e::cuda` and therefore the
-> CUDA scaler — not the software one. Until the CUDA path is wired up, seeing any benefit on
-> an NVIDIA host means forcing a software encoder (`encoder = software`), which costs far
-> more CPU than the crop saves for most people. This is the single most important follow-up,
-> and the reason the setting defaults to off.
+> **The CUDA path is the one this machine actually streams through.** With `capture = kwin`
+> the host selects `h264_nvenc`/`hevc_nvenc`/`av1_nvenc`, which takes `mem_type_e::cuda`.
+> `pipewire_display_t::make_avcodec_encode_device()` then branches on `display_is_nvidia`,
+> and on this hybrid laptop the compositor renders on the AMD iGPU (`eglQueryString(EGL_VENDOR)`
+> is `Mesa Project`), so `display_is_nvidia` is false and the device is
+> `cuda::make_avcodec_encode_device(width, height, false)` — a `cuda_ram_t`, converting
+> through `RGBA_to_NV12` in `cuda.cu`. Until this change, the crop was implemented only in
+> the swscale path and therefore did nothing at all on this host.
 >
-> The CUDA change is small and well-shaped: `cuda::sws_t` already has `float scale` and a
-> `viewport_t`, and the kernels already compute `float x = idX * scale`. Cropping is a
-> source origin added there plus a per-frame assignment of `scale`/`viewport` from
-> `meow::viewport::plan_t`. It needs `cuda.h`, `cuda.cu` and `cuda.cpp`, an nvcc build, and
-> a GPU to verify — which is why it is a separate change rather than this one.
+> The two remaining gaps are **VA-API** and the **`gl_cuda_vram_t`** device taken when the
+> compositor *does* render on the NVIDIA GPU and dmabufs can be imported directly. Both scale
+> through `egl::sws_t`, so both need the same treatment applied once to a GLSL shader.
 
-The software path is the one taken when the capture backend hands **system memory** to an
+### How the CUDA crop works
+
+Same `plan_t`, different adapter. `src/meow/viewport_cuda.h` turns a plan into the two things
+a scaling *kernel* needs, which are not the two things swscale needs:
+
+- a **destination rectangle** (`cuda::viewport_t`) — where the scaled image lands in the
+  encode surface. This already existed; it is the letterbox.
+- a **source map** (`cuda::source_t`) — the texel the first destination pixel samples, and how
+  far the sample point advances per destination pixel, **per axis**. This is new, and it is
+  the whole crop: upstream's kernel computed `float x = idX * scale` from an implicit origin
+  of `(0, 0)`.
+
+The two are kept as separate types on purpose. Overloading `viewport_t` to mean both would put
+a destination offset and a source origin in the same struct, and adding one to the other is a
+bug that renders as "the scaling looks slightly wrong".
+
+**The step is per axis** because `plan()` even-aligns each scaled extent independently, and
+`floor_even()` removes the same *absolute* two pixels from each — so the shorter axis loses far
+more of itself. A 5360x142 strip (a spreadsheet row spanning both monitors) scales into
+1280x32: the width loses nothing and the height loses 5.8%, giving steps of 4.1875 and 4.4375.
+Reuse the width's step on the height and the bottom rows are never read; reuse the height's
+step on the width and the last sample lands at texel 5675 of a 5360-wide frame, which
+`cudaAddressModeClamp` renders as a smear of the last column rather than a fault. Per-axis
+steps also make this path agree with swscale by construction, since swscale is configured with
+an input of `source.width x source.height` and an output of `out_width x out_height`.
+
+**Blanking.** A GPU kernel writes only its destination rectangle, so when a crop shrinks that
+rectangle the uncovered region keeps the previous frame's pixels — the same problem
+`meow::viewport::reblack()` solves on the software path, with no `av_image_fill_black()`
+available. The fix reuses upstream's own machinery: a 2x2 all-black texture, sampled with
+`cudaAddressModeClamp` so that *every* coordinate reads black, run through the ordinary
+conversion kernel over the whole surface. That produces exactly the black `apply_colorspace()`
+writes, with no host-side copy of the colour matrix to drift out of sync. It runs only when
+the destination rectangle moves — never on a steady-state frame, and never on a **pan**, where
+the source origin changes but the destination does not.
+
+**Bounds.** The rectangle is network-supplied, and a kernel indexing outside its texture is a
+memory-safety bug rather than a visual one. `cuda_scaler_config()` re-derives every bound from
+the capture and surface sizes it is handed and falls back to the uncropped baseline on
+anything it cannot prove: reads inside the captured frame, writes inside the encode surface,
+extents even and at least 2 (an odd extent makes the last 2x2 NV12 block write a column past
+the rectangle; a zero extent is an invalid launch configuration, not a small picture).
+
+**Verification.** The geometry is unit tested without a GPU in
+`tests/unit/meow/test_viewport_cuda.cpp`, including a 20000-rectangle sweep of everything the
+16-bit wire can express. That the *kernel* then reads the rectangle those numbers describe is
+checked on real hardware by `tools/meow/viewport_cuda_probe.cpp`, which paints two markers on
+a synthetic 5360x1440 desktop, crops to one of them, and asserts that the marker lands where
+the plan says (within a pixel), that the other marker is **not** in the encoded frame at all,
+that it occupies 2.77x more encoded pixels than uncropped, and that reverting without the
+blanking pass leaves 16093 stale pixels in the padding while reverting with it leaves zero.
+That tool is not part of any build target — `tools/` is Windows-only in CMake — and is run by
+hand; the command line is in its header.
+
+The **software** path is the one taken when the capture backend hands **system memory** to an
 encoder that does not scale on the GPU — on Linux/PipeWire that is `mem_type_e::system`,
 which reaches `video.cpp:make_avcodec_encode_session()` with a null `encode_device->data`
 and constructs an `avcodec_software_encode_device_t`. The software encoders (`libx264`,
 `libx265`, `libsvtav1`) always take it.
 
-The other two scalers already carry a destination viewport and a scale factor of their own —
-`egl::sws_t::offsetX/offsetY/out_width/out_height`, and `cuda::sws_t::viewport`/`scale`.
-`meow::viewport::plan_t` emits exactly those fields, so extending to them is a matter of
-adding a source origin to a GLSL shader and a CUDA kernel. That is a separate change with a
-separate build dependency, and it is not in this one.
+The remaining uncovered scaler, `egl::sws_t`, already carries a destination viewport and a
+scale factor of its own (`offsetX`/`offsetY`/`out_width`/`out_height`).
+`meow::viewport::plan_t` emits exactly those fields and
+`meow::viewport::cuda_scaler_config()` shows the shape the adapter takes, so extending to it
+is a matter of adding a source origin and a per-axis step to a GLSL shader. That is a separate
+change and it is not in this one.
 
 ## The wire protocol
 
@@ -255,9 +311,9 @@ client that never sends the packet gets an unchanged stream.
 
 The host answers **including when what it applied was the full desktop**, so the client can
 tell "refused" apart from "lost in transit". The only case with no echo at all is a session
-that never published any scaler geometry — one that does not run through the software
-scaling path — where the host does not know the captured desktop size and therefore cannot
-even name the coordinate system an answer would be in.
+that never published any scaler geometry — one that runs through neither the software nor the
+CUDA scaling path — where the host does not know the captured desktop size and therefore
+cannot even name the coordinate system an answer would be in.
 
 ## Resetting
 
@@ -270,13 +326,16 @@ A stale crop cannot leak forward:
 - with no rectangle pending, the owner's plan **is** the full-frame plan, so a scaler that
   was cropped reverts on the very next frame rather than waiting for a reinit.
 
-On a host whose encoder never takes the software scaling path at all, `on_scaler_init()` is
-never called, nothing ever claims the state, and the host correctly stays silent rather than
-echoing a crop it did not apply. The one residual gap is a broadcast that runs a software
-session and then a non-software one *without* the broadcast restarting: the second session
-would be answered against the first's geometry. That needs the encoder choice to change
-mid-broadcast, which it cannot — it is fixed by host config and probed once — so it is
-recorded here rather than defended against with another hook on the hot path.
+On a host whose encoder takes neither the software nor the CUDA scaling path,
+`on_scaler_init()` is never called, nothing ever claims the state, and the host correctly
+stays silent rather than echoing a crop it did not apply. On the CUDA path `on_scaler_init()`
+is called from `cuda_t::meow_viewport_init()`, and only when the setting is enabled — so a
+host that never opted in allocates nothing and answers nothing. The one residual gap is a
+broadcast that runs a session on one of those paths and then a session on neither *without*
+the broadcast restarting: the second session would be answered against the first's geometry.
+That needs the encoder choice to change mid-broadcast, which it cannot — it is fixed by host
+config and probed once — so it is recorded here rather than defended against with another hook
+on the hot path.
 
 ## Cost per frame
 
@@ -289,8 +348,14 @@ A **pan** (same crop size, new origin) costs two pointer additions and nothing e
 scaler is not rebuilt, because its dimensions did not change. `MeowViewportEndToEnd`
 asserts both that a pan skips reconfiguration and that it still lands on the right pixels.
 
-A **zoom** (crop size changed) does allocate, once: swscale's filter tables are rebuilt and
-the intermediate output frame is reallocated at the new size. The client rate limits viewport
+On the CUDA path the steady state is the same load and planning plus four integer comparisons
+in `apply_cuda_scaler()`, and a pan is those comparisons and four float stores: the kernel
+launch is identical, only its parameters differ. Nothing is allocated on either.
+
+A **zoom** (crop size changed) does allocate, once, on the software path: swscale's filter
+tables are rebuilt and the intermediate output frame is reallocated at the new size. On the
+CUDA path a zoom allocates nothing at all — it costs one extra full-surface kernel launch to
+re-blacken the encode surface, bounded at the client's 20 Hz update rate. The client rate limits viewport
 updates to one per 50 ms, so this is bounded at 20 Hz in the worst case and is zero while the
 user is reading. The encoder is never reinitialised and the encode surface never changes
 size.
