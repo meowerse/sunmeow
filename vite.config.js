@@ -3,7 +3,6 @@ import fs from 'fs';
 import { resolve } from 'path'
 import { defineConfig } from 'vite'
 import { ViteEjsPlugin } from "vite-plugin-ejs";
-import { codecovVitePlugin } from "@codecov/vite-plugin";
 import vue from '@vitejs/plugin-vue'
 import process from 'process'
 
@@ -53,13 +52,10 @@ export default defineConfig({
     plugins: [
         vue(),
         ViteEjsPlugin({ header }),
-        // The Codecov vite plugin should be after all other plugins
-        codecovVitePlugin({
-            enableBundleAnalysis: true,
-            bundleName: "sunshine",
-            uploadToken: process.env.CODECOV_TOKEN,
-            gitService: "github",
-        }),
+        // MEOW-TOUCH(web-deps): upstream's codecovVitePlugin() removed. It uploads bundle
+        // analysis to LizardByte/Sunshine's Codecov account using a CODECOV_TOKEN this fork
+        // does not have and cannot obtain, so the upload never happens; it cost 71-82% of
+        // every web build. See docs/meow/TOUCHPOINTS.md.
     ],
     root: resolve(assetsSrcPath),
     build: {

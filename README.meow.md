@@ -216,6 +216,10 @@ If you cloned without `--recurse-submodules`:
   checked out, use `-DSUNSHINE_SYSTEM_VULKAN_HEADERS=ON` or `-DSUNSHINE_ENABLE_VULKAN=OFF`.
 - `-DBUILD_DOCS=OFF` skips the hard Doxygen ≥ 1.10 + Graphviz requirement.
 
+> Once it builds and the gate passes, [`docs/meow/going-live.md`](./docs/meow/going-live.md)
+> covers the part this section does not: moving the machine off the packaged Sunshine onto this
+> fork, the way back, and turning the two features on.
+
 ### Running on KDE Plasma 6 / Wayland
 
 Capture backend selection is the thing that actually goes wrong here.
@@ -265,15 +269,26 @@ left untouched wherever possible. That is what keeps upstream fixes mergeable �
 precisely the discipline Apollo lacked.
 
 Every unavoidable edit to an upstream file is marked `MEOW-TOUCH` in place and listed in
-[`docs/meow/TOUCHPOINTS.md`](./docs/meow/TOUCHPOINTS.md). **No upstream C++ source is modified
-at all**, which is the desired state. Two upstream non-source files (`AGENTS.md` and
-`.gitignore`) are appended to — never rewritten, zero deletions — and both are declared in
-that registry.
+[`docs/meow/TOUCHPOINTS.md`](./docs/meow/TOUCHPOINTS.md). Two upstream non-source files
+(`AGENTS.md` and `.gitignore`) are appended to — never rewritten, zero deletions — and both are
+declared in that registry.
+
+**This section used to claim "no upstream C++ source is modified at all". That stopped being
+true on 2026-08-25 and the claim has been removed rather than quietly weakened**, because a
+contributor who believed it would skip the one check that matters on a sync. Upstream C++ *is*
+now touched, in a small and deliberately-argued set of files. Do not restate a count here — it
+goes stale exactly the way the last one did. Derive it:
 
 ```bash
-git grep -n 'MEOW-TOUCH' -- src/                  # places a merge can hurt (currently none)
-git diff --numstat origin-upstream/master -- .    # any non-zero DELETION count is a red flag
+git grep -l 'MEOW-TOUCH' -- src/                  # files a merge can hurt
+git diff --numstat origin-upstream/master -- src/ # any non-zero DELETION count is a red flag
 ```
+
+The registry records, per file, *why layers 1–3 of the additive-only hierarchy were
+insufficient*. That justification is the point of the table; the count is not. Two upstream C++
+files currently have a non-zero deletion count, for two different reasons — one deliberate and
+capped, one merely lines modified in place — and the registry explains which is which. Read it
+there rather than trusting a number restated here.
 
 The full rules — the additive-only hierarchy, what needs human sign-off, and the testing
 requirements — are in [`CLAUDE.md`](./CLAUDE.md). Read it before your first edit.
