@@ -1,7 +1,8 @@
-# Allows Sunshine to access /dev/uinput
+# MEOW-TOUCH(rebrand): renamed from 60-sunshine.rules -- the distro Sunshine package installs
+# a file at that exact path, so ours would have collided with it. Allows Sunmeow to access /dev/uinput
 KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", GROUP="input", MODE="0660", TAG+="uaccess"
 
-# Allows Sunshine to access /dev/uhid
+# Allows Sunmeow to access /dev/uhid
 KERNEL=="uhid", GROUP="input", MODE="0660", TAG+="uaccess"
 
 # Joypads

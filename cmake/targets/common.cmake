@@ -25,6 +25,13 @@ endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 
+# MEOW-TOUCH(rebrand): the binary a user invokes and that packaging installs. The CMake TARGET
+# stays `sunshine` on purpose -- renaming it would touch every reference across cmake/ for no
+# user-visible gain, exactly the trade moonmeow made in keeping its `com.limelight` namespace.
+# Only the output name changes, which is what would otherwise land on /usr/bin/sunshine and
+# collide with the distro package.
+set_target_properties(sunshine PROPERTIES OUTPUT_NAME sunmeow)
+
 # MEOW-TOUCH(ccache-scope): hold back the two commit-dependent version definitions. @see
 # cmake/meow/version_definitions.cmake
 include(${CMAKE_MODULE_PATH}/meow/version_definitions.cmake)

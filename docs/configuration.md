@@ -1994,13 +1994,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            sunshine_state.json
+            sunmeow_state.json
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            credentials_file = sunshine_state.json
+            credentials_file = sunmeow_state.json
             @endcode</td>
     </tr>
 </table>
@@ -2018,13 +2018,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            sunshine.log
+            sunmeow.log
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            log_path = sunshine.log
+            log_path = sunmeow.log
             @endcode</td>
     </tr>
 </table>
@@ -2091,13 +2091,13 @@ editing the `conf` file in a text editor. Use the examples as reference.
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            sunshine_state.json
+            sunmeow_state.json
             @endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            file_state = sunshine_state.json
+            file_state = sunmeow_state.json
             @endcode</td>
     </tr>
 </table>

@@ -5,9 +5,15 @@ cmake_minimum_required(VERSION 3.24)
 # `third-party/libvirtualhid` requires 3.24
 # todo - set this conditionally
 
-project(Sunshine VERSION 0.0.0
-        DESCRIPTION "Self-hosted game stream host for Moonlight"
-        HOMEPAGE_URL "https://app.lizardbyte.dev/Sunshine")
+# MEOW-TOUCH(rebrand): the product name a user actually sees -- window titles, the tray, the
+# web UI, the startup log line, and the Windows resource block. Upstream's `Sunshine` is
+# indistinguishable from the distro package a user may already be running, which is exactly the
+# confusion this fork has to avoid. Internal identifiers are deliberately NOT renamed: the CMake
+# target stays `sunshine`, the C++ namespaces stay, and `src/` keeps its layout -- same reasoning
+# as moonmeow keeping the `com.limelight` namespace while changing its applicationId.
+project(Sunmeow VERSION 0.0.0
+        DESCRIPTION "Self-hosted desktop stream host for Moonmeow"
+        HOMEPAGE_URL "https://github.com/meowerse/sunmeow")
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,13 +24,17 @@ endif()
 
 set(PROJECT_LICENSE "GPL-3.0-only")
 
-set(PROJECT_FQDN "dev.lizardbyte.app.Sunshine")
+# MEOW-TOUCH(rebrand): drives the systemd unit name, the .desktop/.metainfo filenames, the
+# installed icon name and the XDG portal application id. Sharing upstream's FQDN meant sharing
+# the distro package's systemd unit name byte-for-byte -- installing this fork would have
+# collided with it, and portal notifications could not tell them apart.
+set(PROJECT_FQDN "meow.alxnko.sunmeow")
 
-set(PROJECT_BRIEF_DESCRIPTION "GameStream host for Moonlight")  # must be <= 35 characters
+set(PROJECT_BRIEF_DESCRIPTION "GameStream host for Moonmeow")  # must be <= 35 characters
 
 set(PROJECT_LONG_DESCRIPTION "Offering low latency, cloud gaming server capabilities with support for AMD, Intel, \
-and Nvidia GPUs for hardware encoding. Software encoding is also available. You can connect to Sunshine from any \
-Moonlight client on a variety of devices. A web UI is provided to allow configuration, and client pairing, from \
+and Nvidia GPUs for hardware encoding. Software encoding is also available. You can connect to Sunmeow from any \
+Moonmeow client on a variety of devices. A web UI is provided to allow configuration, and client pairing, from \
 your favorite web browser. Pair from the local server or any mobile device.")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)

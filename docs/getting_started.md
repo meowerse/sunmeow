@@ -516,7 +516,7 @@ sunshine
 
 ### Specify config file
 ```bash
-sunshine <directory of conf file>/sunshine.conf
+sunshine <directory of conf file>/sunmeow.conf
 ```
 
 > [!NOTE]
