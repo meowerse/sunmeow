@@ -833,7 +833,7 @@ namespace config {
     CERTIFICATE_FILE,
 
     platf::get_host_name(),  // sunshine_name,
-    "sunshine_state.json"s,  // file_state
+    "sunmeow_state.json"s,  // file_state
     {},  // external_ip
   };
 
@@ -878,12 +878,12 @@ namespace config {
     {},  // Username
     {},  // Password
     {},  // Password Salt
-    platf::appdata().string() + "/sunshine.conf",  // config file
+    platf::appdata().string() + "/sunmeow.conf",  // config file
     {},  // cmd args
     47989,  // Base port number
     "ipv4",  // Address family
     {},  // Bind address
-    platf::appdata().string() + "/sunshine.log",  // log file
+    platf::appdata().string() + "/sunmeow.log",  // log file
     false,  // notify_pre_releases
     true,  // system_tray
     {},  // prep commands

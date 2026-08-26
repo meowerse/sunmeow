@@ -740,7 +740,7 @@ namespace meow::viewport {
         "coordinates are not remapped."
       );
     }
-    return std::string("meow viewport following: disabled. Set '").append(following_config_key).append(" = enabled' in sunshine.conf to allow the client to crop the streamed desktop.");
+    return std::string("meow viewport following: disabled. Set '").append(following_config_key).append(" = enabled' in sunmeow.conf to allow the client to crop the streamed desktop.");
   }
 
 }  // namespace meow::viewport

@@ -598,7 +598,7 @@ namespace meow::display_union {
     if (kwin_selected || !is_union_output_name(output_name)) {
       return {};
     }
-    return std::string("output_name = '").append(union_output_name).append("' requests whole-desktop capture, which only the 'kwin' capture backend provides, but a different backend was selected. Set 'capture = kwin' in sunshine.conf; without it a single output will be streamed instead.");
+    return std::string("output_name = '").append(union_output_name).append("' requests whole-desktop capture, which only the 'kwin' capture backend provides, but a different backend was selected. Set 'capture = kwin' in sunmeow.conf; without it a single output will be streamed instead.");
   }
 
 }  // namespace meow::display_union

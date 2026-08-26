@@ -448,7 +448,7 @@ fi
 %{_udevrulesdir}/*-sunshine.rules
 
 # Modules-load configuration
-%{_modulesloaddir}/*-sunshine.conf
+%{_modulesloaddir}/*-sunmeow.conf
 
 # Desktop entries
 %{_datadir}/applications/*.desktop
