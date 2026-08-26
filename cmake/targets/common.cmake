@@ -24,6 +24,12 @@ elseif(UNIX)
 endif()
 
 target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
+
+# MEOW-TOUCH(ccache-scope): hold back the two commit-dependent version definitions. @see
+# cmake/meow/version_definitions.cmake
+include(${CMAKE_MODULE_PATH}/meow/version_definitions.cmake)
+meow_version_definitions_reserve()
+
 target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 
 # CLion complains about unknown flags after running cmake, and cannot add symbols to the index for cuda files
@@ -80,6 +86,10 @@ if (NOT BUILD_TESTS)
 else()
     set(TEST_DIR "${CMAKE_SOURCE_DIR}/tests")
 endif()
+
+# MEOW-TOUCH(ccache-scope): give them back to their two consumers only. @see
+# cmake/meow/version_definitions.cmake
+meow_version_definitions_apply("${TEST_DIR}")
 
 # src/upnp
 set_source_files_properties("${CMAKE_SOURCE_DIR}/src/upnp.cpp"
