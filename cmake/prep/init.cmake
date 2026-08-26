@@ -8,8 +8,12 @@ elseif (APPLE)
 elseif (UNIX)
     include(GNUInstallDirs)
 
+    # MEOW-TOUCH(rebrand): default to the name we actually install. `OUTPUT_NAME sunmeow`
+    # (cmake/targets/common.cmake) renames the binary, but this path -- which becomes the
+    # unit's `ExecStart` below -- kept upstream's `sunshine`. The unit therefore launched the
+    # DISTRO package's binary, silently, because that binary starts and serves just fine.
     if(NOT DEFINED SUNSHINE_EXECUTABLE_PATH)
-        set(SUNSHINE_EXECUTABLE_PATH "sunshine")
+        set(SUNSHINE_EXECUTABLE_PATH "sunmeow")
     endif()
 
     if(SUNSHINE_BUILD_FLATPAK)
