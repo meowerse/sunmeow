@@ -108,7 +108,10 @@ namespace meow::test_sandbox {
       std::abort();
     }
 
-    std::cout << "meow test sandbox: appdata redirected to " << (root / "sunshine") << std::endl;
+    // Deliberately reports the sandbox ROOT, not root/<product>. appdata() appends the product
+    // directory itself, and hardcoding that name here would silently go stale the next time it
+    // changes -- it already did once, when the rebrand moved it from `sunshine` to `sunmeow`.
+    std::cout << "meow test sandbox: XDG_CONFIG_HOME -> " << root << std::endl;
     return root;
   }
 
