@@ -22,7 +22,7 @@ number is asserted in `MeowViewportPlan.CroppingRecoversTheWastedSurface`.
 
 ## Turning it on
 
-Add to `sunshine.conf`:
+Add to `sunmeow.conf`:
 
 ```
 meow_viewport_following = enabled

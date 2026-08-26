@@ -44,14 +44,14 @@ state between them, and it is where every hazard in this document lives.
 cp -a ~/.config/sunshine ~/.config/sunshine.bak-$(date +%F-%H%M)
 ```
 
-`sunshine_state.json` holds your **paired clients**. Losing it does not lose settings or apps,
+`sunmeow_state.json` holds your **paired clients**. Losing it does not lose settings or apps,
 but every paired device has to re-pair with a PIN.
 
 > **Known defect, and the reason this backup is mandatory rather than prudent:** the repo's own
 > test binary writes into the real config directory. `tests/unit/test_http_pairing.cpp` drives
 > the genuine pairing code, which persists to `config::nvhttp.file_state`; `$HOME` does not
 > redirect it. Running `./build/tests/test_sunshine` therefore **overwrites
-> `sunshine_state.json` with a fixture** (a single device literally named `test`) and creates a
+> `sunmeow_state.json` with a fixture** (a single device literally named `test`) and creates a
 > stray `~/.config/sunshine/tests/` directory. A running Sunshine keeps the real client list in
 > memory and will write it back when it next saves — so the damage is latent, not immediate, and
 > it only becomes real if the process restarts first. Check `docs/meow/TOUCHPOINTS.md` and the
@@ -104,7 +104,7 @@ Both ship **off**. That is not timidity: each changes what the client sees, and 
 silently started cropping would be a worse bug than one that does nothing.
 
 Set these in the web UI (they are in the **Audio/Video** tab) or directly in
-`~/.config/sunshine/sunshine.conf`:
+`~/.config/sunshine/sunmeow.conf`:
 
 | Key | Default | What it does |
 | --- | --- | --- |

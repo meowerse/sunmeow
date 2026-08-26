@@ -58,3 +58,10 @@ node_modules/
 .venv/
 venv/
 .claude/worktrees/
+
+# MEOW-TOUCH(rebrand): test-suite artifacts. `test_sunshine` writes its log and
+# `write_file_test_*.txt` fixtures into the CWD, so running the gate from the repo root
+# leaves them untracked -- and `git add -A` then commits them. That happened once here:
+# 30,331 insertions of test output, caught only by reading the diffstat.
+test_sunmeow.log*
+write_file_test_*.txt

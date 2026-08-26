@@ -265,27 +265,35 @@ namespace platf {
         homedir = getpwuid(geteuid())->pw_dir;
       }
 
+      // MEOW-TOUCH(rebrand): the config directory is `sunmeow`, not `sunshine`, in all four
+      // resolution branches below. This is the single most consequential half of the rebrand:
+      // sharing `~/.config/sunshine` with the distro package meant this fork could overwrite a
+      // running Sunshine's paired-client list. Separating it makes that impossible.
+      //
+      // The migration branch matters as much as the others -- it must point at OUR old location,
+      // never at `~/.config/sunshine`, or `SUNSHINE_MIGRATE_CONFIG=1` would copy the distro
+      // package's config here and then `fs::remove_all()` the original.
       // May be set if running under a systemd service with the ConfigurationDirectory= option set.
       if (std::string dir; lizardbyte::common::get_env("CONFIGURATION_DIRECTORY", dir) && !dir.empty()) {
         found = true;
-        config_path = fs::path(dir) / "sunshine"sv;
+        config_path = fs::path(dir) / "sunmeow"sv;
       }
       // Otherwise, follow the XDG base directory specification:
       // https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
       if (std::string dir; !found && lizardbyte::common::get_env("XDG_CONFIG_HOME", dir) && !dir.empty()) {
         found = true;
-        config_path = fs::path(dir) / "sunshine"sv;
+        config_path = fs::path(dir) / "sunmeow"sv;
       }
       // As a last resort, use the home directory
       if (!found) {
         migrate_config = false;
-        config_path = homedir / ".config" / "sunshine";
+        config_path = homedir / ".config" / "sunmeow";
       }
 
       // migrate from the old config location if necessary
       if (std::string migrate_envvar; migrate_config && found && lizardbyte::common::get_env("SUNSHINE_MIGRATE_CONFIG", migrate_envvar) && migrate_envvar == "1") {
         std::error_code ec;
-        fs::path old_config_path = homedir / ".config" / "sunshine";
+        fs::path old_config_path = homedir / ".config" / "sunmeow";
         if (old_config_path != config_path && fs::exists(old_config_path, ec)) {
           if (!fs::exists(config_path, ec)) {
             std::cout << "Migrating config from "sv << old_config_path << " to "sv << config_path << std::endl;

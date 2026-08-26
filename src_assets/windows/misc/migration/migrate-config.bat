@@ -15,16 +15,16 @@ if exist "%OLD_DIR%\apps.json" (
         icacls "%NEW_DIR%\apps.json" /reset
     )
 )
-if exist "%OLD_DIR%\sunshine.conf" (
-    if not exist "%NEW_DIR%\sunshine.conf" (
-        move "%OLD_DIR%\sunshine.conf" "%NEW_DIR%\sunshine.conf"
-        icacls "%NEW_DIR%\sunshine.conf" /reset
+if exist "%OLD_DIR%\sunmeow.conf" (
+    if not exist "%NEW_DIR%\sunmeow.conf" (
+        move "%OLD_DIR%\sunmeow.conf" "%NEW_DIR%\sunmeow.conf"
+        icacls "%NEW_DIR%\sunmeow.conf" /reset
     )
 )
-if exist "%OLD_DIR%\sunshine_state.json" (
-    if not exist "%NEW_DIR%\sunshine_state.json" (
-        move "%OLD_DIR%\sunshine_state.json" "%NEW_DIR%\sunshine_state.json"
-        icacls "%NEW_DIR%\sunshine_state.json" /reset
+if exist "%OLD_DIR%\sunmeow_state.json" (
+    if not exist "%NEW_DIR%\sunmeow_state.json" (
+        move "%OLD_DIR%\sunmeow_state.json" "%NEW_DIR%\sunmeow_state.json"
+        icacls "%NEW_DIR%\sunmeow_state.json" /reset
     )
 )
 
