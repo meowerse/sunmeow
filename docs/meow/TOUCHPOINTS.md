@@ -9,18 +9,36 @@ additive-only prime directive — before adding a row.
 
 ---
 
-## Current state: exactly one upstream file has content **removed**
+## Current state: one upstream file has content **removed**
 
 Verified 2026-08-25 against `origin-upstream/master` (Sunshine `790d70f0`).
 
+**This changed on 2026-08-25.** `vite.config.js` is the first upstream file we delete
+*functional* content from: `4` added, `8` deleted (`web-deps`, removing `codecovVitePlugin`).
+Earlier revisions of this file opened with *"no upstream file has content removed"* and that
+claim is retired rather than quietly left standing. The bar for the next one is unchanged and
+deliberately high — see the row's justification below, and §2 of `CLAUDE.md`.
+
+Two further corrections to earlier revisions, both found by *running* the greps below rather
+than by reading the table:
+
+- **`src/platform/linux/kwingrab.cpp` does not have a `0` deletion count** — it is `282` added,
+  `8` deleted. Those eight are lines *modified in place*, not functionality removed, so the
+  spirit of the rule held; but the number printed in the regeneration block said `0` and was
+  simply wrong. They are enumerated below.
+- **The documented grep did not cover the whole repository.** It scanned `src/ src_assets/`
+  only, so a `MEOW-TOUCH` marker in a repo-root file such as `vite.config.js` was invisible to
+  it — the marker would exist and the pre-sync check would never report it. The grep below is
+  widened accordingly.
+
 Nine upstream **C++ sources** are now modified: two by `unified-desktop-capture`
 (`kwingrab.cpp`, `misc.cpp`), four — `config.h`, `config.cpp`, `stream.cpp`, `video.cpp` —
-that now carry **two** markers each, one from `adaptive-bitrate` and one from `viewport`, and
-three by `viewport-cuda` (`cuda.h`, `cuda.cu`, `cuda.cpp`).
+that carry **two** markers each, one from `adaptive-bitrate` and one from `viewport`, and three
+by `viewport-cuda` (`cuda.h`, `cuda.cu`, `cuda.cpp`).
 An earlier revision of this file said *"Zero `MEOW-TOUCH` markers exist in `src/`"* and
 described that as the state to keep. The first half stopped being true the moment
 whole-desktop capture landed; the second half is still the goal.
-`git grep -n 'MEOW-TOUCH' -- src/ src_assets/` is the authority — if this table disagrees
+`git grep -n 'MEOW-TOUCH' -- src/ src_assets/ vite.config.js` is the authority — if this table disagrees
 with it, this table is wrong.
 
 Both features deliberately kept their hooks tiny and far apart inside those four files, which
@@ -71,13 +89,16 @@ The edits are otherwise additive, and the geometry and policy they hook into liv
 `src/meow/display_union.h`, `src/meow/adaptive_bitrate.h`, `src/meow/viewport.h` and
 `src/meow/viewport_cuda.h`, all unit tested without hardware.
 
-**Exactly two upstream source files have a non-zero deletion count, and they are non-zero for
-completely different reasons.** Knowing which is which is the whole point of this section — a
-check that fires on a benign file teaches you to ignore it, and then you ignore the real one.
+**Five files have a non-zero deletion count, for four different reasons.** Knowing which is
+which is the whole point of this section — a check that fires on a benign file teaches you to
+ignore it, and then you ignore the real one.
 
 ```
-27 ins    11 del   src/platform/linux/cuda.cu        <- deliberate. MUST STAY 11.
-282 ins    8 del   src/platform/linux/kwingrab.cpp   <- modified in place. Benign.
+   4 ins     8 del   vite.config.js                    <- genuine removal. Argued below.
+   2 ins     3 del   package.json                      <- replaced dependency lines.
+ 522 ins  1251 del   package-lock.json                 <- generated. Never hand-merge.
+  27 ins    11 del   src/platform/linux/cuda.cu        <- deliberate. MUST STAY 11.
+ 282 ins     8 del   src/platform/linux/kwingrab.cpp   <- modified in place. Benign.
 ```
 
 **`cuda.cu` — 11, and it must stay 11.** These are real edits to upstream content, argued in
@@ -103,13 +124,23 @@ upstream `master`, or the result is contaminated by upstream's own drift:
 
 ```bash
 mb=$(git merge-base origin-upstream/master HEAD)
-git diff --numstat $mb HEAD -- src/ | awk '$2>0'      # should print exactly the two lines above
+git diff --numstat $mb HEAD -- src/ | awk '$2>0'      # should print exactly cuda.cu and kwingrab.cpp
 git diff $mb HEAD -- src/platform/linux/kwingrab.cpp | grep -E '^-' | grep -v '^---'
 ```
 
 For `kwingrab.cpp`, every deleted line must have a near-identical added line beside it. A
 deletion that stands alone is upstream content we removed, and is the thing this check exists
 to catch.
+
+Three upstream **build-tooling** files are modified by the `web-deps` change. One of them,
+`vite.config.js`, is the tree's only genuine deletion of upstream *functionality* and is argued
+at length because §2 requires it:
+
+| File | Marker | Why layers 1–3 were insufficient | Added |
+| --- | --- | --- | --- |
+| `vite.config.js` | `MEOW-TOUCH(web-deps)` | **The only removal in the tree: `4` added, `8` deleted.** Drops upstream's `codecovVitePlugin()` call, its `import`, and the now-orphaned *"should be after all other plugins"* comment. Layers 1–3 all fail structurally: this file's default export is a plain object literal and the plugin list is an array literal inside it, with no registration hook, no virtual and nothing exported — a new file in `src/meow/` cannot *un*-register a plugin, and a one-line hook can only ever add one. The additive alternative was considered and rejected on its merits, not for convenience: neutering the plugin in place (`enableBundleAnalysis: false`) still edits this exact file, still ships the devDependency, and — decisively — still leaves the build uninstallable. `@codecov/vite-plugin@2.0.1` is the newest release and peer-caps at `vite "4.x \|\| 5.x \|\| 6.x"`, so on vite 8 `npm ci` fails `ERESOLVE` unless a permanent `overrides` entry forces the resolution. Removal is the only route that does not add a standing resolution hack to `package.json`. What is removed is also **inert here by construction**: it uploads bundle analysis to *LizardByte/Sunshine's* Codecov account via a `CODECOV_TOKEN` this fork does not have and cannot obtain, so the upload never happened — the build merely retried it (`get-pre-signed-url failed after 3 attempts`) at a cost of 71–82% of every web build. Same category as the 24 inherited LizardByte workflows this repo already deleted, whose precedent is recorded in `.github/workflows/ci.yml`'s header. **Proven inert:** the emitted tree is byte-identical with and without the plugin — `diff -r` over all 79 artifacts reports no difference, so the "after all other plugins" ordering constraint is satisfied vacuously. If upstream is ever merged back onto a repo that *does* own the Codecov project, this is a one-hunk revert. | 2026-08-25 |
+| `package.json` | _(none — JSON, no comment syntax)_ | `2` added, `3` deleted. Bumps `vite` 6.4.3 → 8.2.2 and `marked` 18.0.10 → 18.0.11, and drops the `@codecov/vite-plugin` devDependency. JSON admits no comment, so the marker lives in `vite.config.js` and this row is the declaration. Deletions are the three replaced/removed dependency lines — no upstream *capability* is removed beyond the plugin argued above. | 2026-08-25 |
+| `package-lock.json` | _(none — generated)_ | `522` added, `1251` deleted. Entirely regenerated by `npm`, never hand-edited; the large deletion count is `rollup`/`esbuild` platform packages disappearing because vite 8 bundles with `rolldown`, plus the codecov subtree. Not a hand-authored touch-point — it is an artifact of the two rows above and should be regenerated, never merged by hand. | 2026-08-25 |
 
 Two upstream **non-source** files are appended to. Both are append-only (`0` deletions), so
 they cannot conflict except at the very end of the file, but they are upstream files and are
@@ -140,8 +171,10 @@ The greps are the source of truth. If they disagree with the table above, **the 
 wrong**.
 
 ```bash
-# 1. every declared touch-point in our source
-git grep -n 'MEOW-TOUCH' -- src/ src_assets/
+# 1. every declared touch-point in our source.
+#    NOTE the pathspec includes repo-root build tooling: a marker in vite.config.js is
+#    invisible to a 'src/ src_assets/'-only grep, which is how one went unlisted before.
+git grep -n 'MEOW-TOUCH' -- src/ src_assets/ vite.config.js
 
 # 2. every upstream file we differ from at all, and by how much.
 #    Any non-zero DELETION count is a red flag: we removed upstream content.
@@ -149,24 +182,30 @@ git diff --numstat origin-upstream/master -- .
 ```
 
 Run both **before every upstream sync** ([`CLAUDE.md` §4](../../CLAUDE.md)). The first grep
-now returns the `unified-desktop-capture`, `viewport`, `viewport-cuda` and `adaptive-bitrate`
-markers; reconcile them against the table above row by row. Any marker the table does not list is the bug.
+now returns the `unified-desktop-capture`, `viewport`, `viewport-cuda`, `adaptive-bitrate` and
+`web-deps` markers — **15** distinct (file, marker) pairs. Reconcile them against the table
+above row by row. Any marker the table does not list is the bug — and any marker *outside the
+pathspec* is a bug the grep itself cannot show you, so widen the pathspec whenever a touch-point
+lands in a new part of the tree. That has already happened once: `vite.config.js` sits at the
+repo root, which the original `src/ src_assets/` pathspec never scanned.
 
-What matters in (2) is the **deletion** column. We add lines to upstream files; where a line
-genuinely had to change we replace it in place, and where upstream content genuinely had to go
-we account for it above. Two counts are currently non-zero and both are explained there —
-`cuda.cu` at `11` (which must not grow) and `kwingrab.cpp` at `8` (modified in place). The
-insertion counts change with every edit to our own docs, so do not treat them as fixed; check
-the middle column, and treat any non-zero value as **a question to answer, not automatically a
-fault**:
+What matters in (2) is the **deletion** column. The rule is still *prefer zero* — we add to
+upstream files rather than cut them — but it is no longer literally zero everywhere, so treat
+any non-zero value as **a question to answer, not an automatic failure**. Five are known and
+justified above: `vite.config.js` (`8`, the codecov removal), `package.json` (`3`),
+`package-lock.json` (`1251`, generated), `cuda.cu` (`11`, which must not grow) and
+`kwingrab.cpp` (`8`, in-place edits). A non-zero count on any *other* file, or a count larger
+than recorded here, means someone removed upstream content — investigate before syncing.
+Insertion counts change with every edit to our own docs, so do not treat those as fixed:
 
 ```
+# <added>	<deleted>	<path>     -- deletions are the column that matters
 1	0	.gitignore
 17	0	AGENTS.md
-<n>	0	src/platform/linux/kwingrab.cpp
+282	8	src/platform/linux/kwingrab.cpp    # 8 = in-place signature/comment edits
 <n>	0	src/platform/linux/misc.cpp
 <n>	0	src/platform/linux/cuda.h
-<n>	11	src/platform/linux/cuda.cu
+27	11	src/platform/linux/cuda.cu         # 11 = deliberate; MUST NOT GROW
 <n>	0	src/platform/linux/cuda.cpp
 <n>	0	src/config.h
 <n>	0	src/config.cpp
@@ -177,6 +216,9 @@ fault**:
 <n>	0	src_assets/common/assets/web/configs/tabs/audiovideo/DisplayModesSettings.vue
 <n>	0	src_assets/common/assets/web/public/assets/locale/en.json
 <n>	0	docs/configuration.md
+4	8	vite.config.js                     # the codecov removal -- see the row above
+2	3	package.json                       # dependency bumps + codecov dropped
+522	1251	package-lock.json                  # generated; regenerate, never hand-merge
 <n>	0	CLAUDE.md
 <n>	0	README.meow.md
 <n>	0	docs/meow/TOUCHPOINTS.md
@@ -185,7 +227,8 @@ fault**:
 A non-zero deletion count against `.gitignore` or `AGENTS.md` means someone removed upstream
 content — investigate before syncing. For source files, a non-zero count means *look*: either
 it is a modified line with its replacement beside it (fine, and it belongs in the table above),
-or it is a genuine removal (not fine). The count alone cannot tell you which.
+or it is a genuine removal (not fine). The count alone cannot tell you which. The same applies
+to every file above whose deletion column reads `0`.
 
 Check your remote names first — in this clone `upstream` is **Apollo**, not Sunshine:
 
