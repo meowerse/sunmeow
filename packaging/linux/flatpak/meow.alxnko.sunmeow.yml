@@ -9,7 +9,7 @@ add-build-extensions:
     version: "25.08"
     no-autodownload: true
     autodelete: false
-command: sunshine
+command: sunmeow  # MEOW-TOUCH(rebrand)
 separate-locales: false
 finish-args:
   - --device=all  # access all devices
@@ -90,7 +90,7 @@ modules:
       - -DSUNSHINE_ENABLE_PORTAL=ON
       - -DSUNSHINE_ENABLE_WAYLAND=ON
       - -DSUNSHINE_ENABLE_X11=ON
-      - -DSUNSHINE_EXECUTABLE_PATH=/app/bin/sunshine
+      - -DSUNSHINE_EXECUTABLE_PATH=/app/bin/sunmeow  # MEOW-TOUCH(rebrand)
       - -DSUNSHINE_PUBLISHER_NAME='LizardByte'
       - -DSUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev'
       - -DSUNSHINE_PUBLISHER_ISSUE_URL='https://app.lizardbyte.dev/support'

@@ -6,7 +6,11 @@ modprobe uhid
 
 # Ensure Sunshine can grab images from KMS
 path_to_setcap=$(which setcap)
-path_to_sunshine=$(readlink -f "$(which sunshine)")
+# MEOW-TOUCH(rebrand): resolve OUR binary. `which sunshine` finds the distro package's
+# binary on any machine that has it, so this granted cap_sys_admin,cap_sys_nice to another
+# package's executable and left ours with none -- which presents as the fork black-screening
+# on KMS/Wayland capture, i.e. exactly the symptom the setcap step exists to prevent.
+path_to_sunshine=$(readlink -f "$(which sunmeow)")
 if [ -x "$path_to_setcap" ] ; then
   echo "Setting CAP_SYS_ADMIN, CAP_SYS_NICE capabilities on Sunshine binary."
   echo "$path_to_setcap cap_sys_admin,cap_sys_nice+p $path_to_sunshine"

@@ -30,7 +30,7 @@ target_link_libraries(sunshine ${SUNSHINE_EXTERNAL_LIBRARIES} ${EXTRA_LIBS})
 # user-visible gain, exactly the trade moonmeow made in keeping its `com.limelight` namespace.
 # Only the output name changes, which is what would otherwise land on /usr/bin/sunshine and
 # collide with the distro package.
-set_target_properties(sunshine PROPERTIES OUTPUT_NAME sunmeow)
+set_target_properties(sunshine PROPERTIES OUTPUT_NAME ${SUNMEOW_BINARY_NAME})
 
 # MEOW-TOUCH(ccache-scope): hold back the two commit-dependent version definitions. @see
 # cmake/meow/version_definitions.cmake

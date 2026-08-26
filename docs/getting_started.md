@@ -453,8 +453,11 @@ systemctl --user --now enable app-dev.lizardbyte.app.Sunshine
 ```
 
 > [!NOTE]
-> The service has been renamed to "app-dev.lizardbyte.app.Sunshine" in order to increase compatibility with
-> XDG Desktop Portal, but it is also aliased to "sunshine.service" for convenience.
+> The service has been renamed to "app-meow.alxnko.sunmeow" in order to increase compatibility with
+> XDG Desktop Portal, and is aliased to "sunmeow.service" for convenience. It is deliberately
+> **not** aliased to "sunshine.service": that is the distro Sunshine package's unit name, and
+> claiming it makes the alias symlink collide on install and `systemctl --user start sunshine`
+> ambiguous between the two.
 
 ### macOS
 The first time you start Sunshine, you will be asked to grant access to screen recording and your microphone.

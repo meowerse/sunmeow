@@ -133,7 +133,7 @@ and recorded in `docs/meow/TOUCHPOINTS.md`:
 Before every upstream sync, run:
 
 ```bash
-git grep -n 'MEOW-TOUCH' -- src/
+git grep -n 'MEOW-TOUCH'
 ```
 
 That grep is the complete list of places a merge can hurt. Keep it short. A growing

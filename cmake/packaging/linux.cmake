@@ -12,6 +12,8 @@ file(CREATE_LINK "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/assets/shaders"
         "${CMAKE_BINARY_DIR}/assets/shaders" COPY_ON_ERROR SYMBOLIC)
 
 if(${SUNSHINE_BUILD_APPIMAGE} OR ${SUNSHINE_BUILD_FLATPAK})
+    # MEOW-TOUCH(rebrand): udev rule and modules-load conf renamed 60-sunshine -> 60-sunmeow,
+    # so installing this fork cannot overwrite the files the distro package owns.
     install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunmeow.rules"
             DESTINATION "${SUNSHINE_ASSETS_DIR}/udev/rules.d")
     install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunmeow.conf"

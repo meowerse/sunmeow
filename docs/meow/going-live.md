@@ -22,7 +22,22 @@ systemctl --user show sunshine -p FragmentPath
 
 Two facts that matter more than they look:
 
-- `sunshine.service` is an **alias**; the real unit is `app-dev.lizardbyte.app.Sunshine.service`.
+- `sunshine.service` is the **distro package's** alias; the real unit there is
+  `app-dev.lizardbyte.app.Sunshine.service`. This fork does not claim that name -- its own unit
+  is `app-meow.alxnko.sunmeow.service`, aliased to `sunmeow.service`.
+
+  **Upgrading from a build made before that fix:** the old alias was materialised at enable
+  time and `systemctl --user disable` only removes symlinks the *current* unit text declares,
+  so a stale `~/.config/systemd/user/sunshine.service` pointing at our unit survives the
+  upgrade and keeps shadowing the distro's. Remove it once:
+
+  ```bash
+  systemctl --user disable app-meow.alxnko.sunmeow.service
+  rm -f ~/.config/systemd/user/sunshine.service
+  systemctl --user daemon-reload
+  systemctl --user --now enable app-meow.alxnko.sunmeow.service
+  ```
+
   Commands aimed at the alias work, but `systemctl --user status sunshine` reporting `alias`
   rather than a state is not an error.
 - The packaged binary already carries the capabilities KMS capture needs:
