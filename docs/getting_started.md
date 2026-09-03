@@ -444,12 +444,12 @@ After adding yourself to the group, log out and log back in for the changes to t
 
 **Start once**
 ```bash
-systemctl --user start app-dev.lizardbyte.app.Sunshine
+systemctl --user start app-meow.alxnko.sunmeow
 ```
 
 **Start on boot**
 ```bash
-systemctl --user --now enable app-dev.lizardbyte.app.Sunshine
+systemctl --user --now enable app-meow.alxnko.sunmeow
 ```
 
 > [!NOTE]
@@ -514,12 +514,12 @@ command is listed in the specified package [install](#install) instructions abov
 > Windows installer. Running multiple instances of Sunshine is not advised.
 
 ```bash
-sunshine
+sunmeow
 ```
 
 ### Specify config file
 ```bash
-sunshine <directory of conf file>/sunmeow.conf
+sunmeow <directory of conf file>/sunmeow.conf
 ```
 
 > [!NOTE]
@@ -531,15 +531,15 @@ sunshine <directory of conf file>/sunmeow.conf
 Assuming you are already logged into the host, you can use this command
 
 ```bash
-ssh <user>@<ip_address> 'export DISPLAY=:0; sunshine'
+ssh <user>@<ip_address> 'export DISPLAY=:0; sunmeow'
 ```
 
 If you are logged into the host with only a tty (teletypewriter), you can use `startx` to start the X server prior to
-executing Sunshine. You nay need to add `sleep` between `startx` and `sunshine` to allow more time for the display to
+executing Sunshine. You nay need to add `sleep` between `startx` and `sunmeow` to allow more time for the display to
 be ready.
 
 ```bash
-ssh <user>@<ip_address> 'startx &; export DISPLAY=:0; sunshine'
+ssh <user>@<ip_address> 'startx &; export DISPLAY=:0; sunmeow'
 ```
 
 > [!TIP]
@@ -586,13 +586,13 @@ To get a list of available arguments, run the following command.
 
 @tabs{
    @tab{ General | ```bash
-      sunshine --help
+      sunmeow --help
       ```}
    @tab{ AppImage | ```bash
-      ./sunshine.AppImage --help
+      ./sunmeow.AppImage --help
       ```}
    @tab{ Flatpak | ```bash
-      flatpak run --command=sunshine dev.lizardbyte.app.Sunshine --help
+      flatpak run --command=sunmeow meow.alxnko.sunmeow --help
       ```}
 }
 

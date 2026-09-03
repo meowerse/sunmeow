@@ -39,7 +39,13 @@ elseif(UNIX)
     endif()
     # Anchored to a line start: the file documents the old `Alias=sunshine.service` in a
     # comment on purpose, and an unanchored match cannot tell that apart from a live directive.
-    if(_meow_unit MATCHES "\n(ExecStart|ExecStop|Alias)=[^\n]*sunshine")
+    #
+    # `sunshine` must also be the directive's terminal token -- followed by a space (the flatpak
+    # `--command=sunshine <fqdn>` form), a dot (`sunshine.service`), or the end of the line.
+    # Matching it anywhere would fail the configure on a perfectly correct unit whose install
+    # prefix merely contains the word, e.g. `ExecStart=/usr/share/sunshine/bin/sunmeow` -- which
+    # cmake/packaging/unix.cmake can still produce when CMAKE_INSTALL_PREFIX is empty.
+    if(_meow_unit MATCHES "\n(ExecStart|ExecStop|Alias)=[^\n]*sunshine[ .\n]")
         message(FATAL_ERROR
                 "Generated systemd unit still names 'sunshine' in a directive. "
                 "That is the distro package's binary and unit name, not ours.")

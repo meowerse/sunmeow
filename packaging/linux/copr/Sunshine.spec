@@ -439,7 +439,10 @@ fi
 
 %files
 # Executables
-%caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunshine
+# MEOW-TOUCH(rebrand): our binary is `sunmeow` (OUTPUT_NAME), so %files must declare that
+# name. rpmbuild hard-errors on a %files entry with no matching installed file, so leaving
+# `sunshine` here does not merely mis-name the capability -- it fails the copr build.
+%caps(cap_sys_admin,cap_sys_nice+p) %{_bindir}/sunmeow
 
 # Systemd unit files for user services
 %{_userunitdir}/*.service

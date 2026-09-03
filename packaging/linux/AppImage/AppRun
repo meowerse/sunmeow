@@ -53,11 +53,14 @@ function install() {
   sudo udevadm trigger --property-match=DEVNAME=/dev/uinput
   sudo udevadm trigger --property-match=DEVNAME=/dev/uhid
 
-  # sunshine service
+  # sunmeow service
   mkdir -p ~/.config/systemd/user
   cp -r "$SUNSHINE_SHARE_HERE/systemd/user/" ~/.config/systemd/
   # patch service executable path
-  sed -i -e "s#$SUNSHINE_PATH#$(readlink -f $ARGV0)#g" ~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service
+  # MEOW-TOUCH(rebrand): our unit is named from PROJECT_FQDN. Against the upstream name this
+  # sed matched nothing, so ExecStart was never repointed at the AppImage and the unit kept
+  # naming a /usr/bin path that an AppImage install does not create.
+  sed -i -e "s#$SUNSHINE_PATH#$(readlink -f $ARGV0)#g" ~/.config/systemd/user/app-meow.alxnko.sunmeow.service
 
   # setcap
   sudo setcap cap_sys_admin,cap_sys_nice+p "$(readlink -f "$SUNSHINE_BIN_HERE")"
@@ -71,7 +74,8 @@ function remove() {
   sudo rm -f /etc/modules-load.d/60-sunmeow.conf
 
   # remove service
-  sudo rm -f ~/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service
+  # MEOW-TOUCH(rebrand): remove OUR unit; the upstream name is the distro package's.
+  sudo rm -f ~/.config/systemd/user/app-meow.alxnko.sunmeow.service
 }
 
 # process arguments
@@ -92,7 +96,7 @@ fi
 
 # create config directory if it doesn't exist
 # https://github.com/LizardByte/Sunshine/issues/324
-mkdir -p ~/.config/sunshine
+mkdir -p ~/.config/sunmeow  # MEOW-TOUCH(rebrand): our config dir, not the distro package's.
 
 # run sunshine
 "$SUNSHINE_BIN_HERE" $@

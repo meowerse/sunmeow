@@ -7,15 +7,15 @@ If you forgot your credentials to the web UI, try this.
 
 @tabs{
   @tab{General | ```bash
-    sunshine --creds {new-username} {new-password}
+    sunmeow --creds {new-username} {new-password}
     ```
   }
   @tab{AppImage | ```bash
-    ./sunshine.AppImage --creds {new-username} {new-password}
+    ./sunmeow.AppImage --creds {new-username} {new-password}
     ```
   }
   @tab{Flatpak | ```bash
-    flatpak run --command=sunshine dev.lizardbyte.app.Sunshine --creds {new-username} {new-password}
+    flatpak run --command=sunmeow meow.alxnko.sunmeow --creds {new-username} {new-password}
     ```
   }
 }

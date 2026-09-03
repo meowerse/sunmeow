@@ -26,10 +26,10 @@ location by modifying the configuration file.
 | OS      | Location                                        |
 |---------|-------------------------------------------------|
 | Docker  | @code{}/config@endcode                          |
-| FreeBSD | @code{}~/.config/sunshine@endcode               |
-| Linux   | @code{}~/.config/sunshine@endcode               |
-| macOS   | @code{}~/.config/sunshine@endcode               |
-| Windows | @code{}%ProgramFiles%\\Sunshine\\config@endcode |
+| FreeBSD | @code{}~/.config/sunmeow@endcode                |
+| Linux   | @code{}~/.config/sunmeow@endcode                |
+| macOS   | @code{}~/.config/sunmeow@endcode                |
+| Windows | @code{}%ProgramFiles%\\Sunmeow\\config@endcode  |
 
 Although it is recommended to use the configuration UI, it is possible manually configure Sunshine by
 editing the `conf` file in a text editor. Use the examples as reference.

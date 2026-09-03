@@ -38,7 +38,7 @@ Two facts that matter more than they look:
   systemctl --user --now enable app-meow.alxnko.sunmeow.service
   ```
 
-  Commands aimed at the alias work, but `systemctl --user status sunshine` reporting `alias`
+  Commands aimed at our alias work, but `systemctl --user status sunmeow` reporting `alias`
   rather than a state is not an error.
 - The packaged binary already carries the capabilities KMS capture needs:
   ```bash
@@ -52,12 +52,19 @@ Two facts that matter more than they look:
 
 ## 2. Back up the configuration first — this is not boilerplate
 
-Both binaries read the same directory, `~/.config/sunshine/`. It is the only shared mutable
-state between them, and it is where every hazard in this document lives.
+Since the rebrand the two binaries **no longer share a directory**: the distro package reads
+`~/.config/sunshine/`, this fork reads `~/.config/sunmeow/`. That separation is the point of
+the rebrand -- there is no shared mutable state left to corrupt, and switching between the two
+no longer risks one overwriting the other's settings, apps or paired clients.
+
+Back ours up anyway, because the hazards below are ours:
 
 ```bash
-cp -a ~/.config/sunshine ~/.config/sunshine.bak-$(date +%F-%H%M)
+cp -a ~/.config/sunmeow ~/.config/sunmeow.bak-$(date +%F-%H%M)
 ```
+
+If you are coming from a pre-rebrand build of this fork, your state is still under
+`~/.config/sunshine/`; back that up too and copy it across.
 
 `sunmeow_state.json` holds your **paired clients**. Losing it does not lose settings or apps,
 but every paired device has to re-pair with a PIN.
@@ -67,7 +74,7 @@ but every paired device has to re-pair with a PIN.
 > the genuine pairing code, which persists to `config::nvhttp.file_state`; `$HOME` does not
 > redirect it. Running `./build/tests/test_sunshine` therefore **overwrites
 > `sunmeow_state.json` with a fixture** (a single device literally named `test`) and creates a
-> stray `~/.config/sunshine/tests/` directory. A running Sunshine keeps the real client list in
+> stray `~/.config/sunmeow/tests/` directory. A running Sunshine keeps the real client list in
 > memory and will write it back when it next saves — so the damage is latent, not immediate, and
 > it only becomes real if the process restarts first. Check `docs/meow/TOUCHPOINTS.md` and the
 > repository's open branches for the sandbox fix before assuming this still applies.
@@ -119,7 +126,7 @@ Both ship **off**. That is not timidity: each changes what the client sees, and 
 silently started cropping would be a worse bug than one that does nothing.
 
 Set these in the web UI (they are in the **Audio/Video** tab) or directly in
-`~/.config/sunshine/sunmeow.conf`:
+`~/.config/sunmeow/sunmeow.conf`:
 
 | Key | Default | What it does |
 | --- | --- | --- |

@@ -431,7 +431,8 @@ class Sunshine < Formula
     bin.install "build/tests/#{TEST_BINARY}" if IS_UPSTREAM_REPO
 
     # codesign the binary on intel macs
-    system "codesign", "-s", "-", "--force", "--deep", bin/"sunshine" if OS.mac? && Hardware::CPU.intel?
+    # MEOW-TOUCH(rebrand): OUTPUT_NAME installs `sunmeow` on every platform, macOS included.
+    system "codesign", "-s", "-", "--force", "--deep", bin/"sunmeow" if OS.mac? && Hardware::CPU.intel?
 
     bin.install "src_assets/linux/misc/postinst" if OS.linux?
   end
@@ -444,7 +445,9 @@ class Sunshine < Formula
   end
 
   service do
-    run [opt_bin/"sunshine", "~/.config/sunshine/sunmeow.conf"] if OS.mac?
+    # MEOW-TOUCH(rebrand): binary AND config dir are ours. This line previously named the
+    # distro binary and the distro config dir while already naming OUR conf file inside it.
+    run [opt_bin/"sunmeow", "~/.config/sunmeow/sunmeow.conf"] if OS.mac?
     name linux: "app-@PROJECT_FQDN@" if OS.linux?
   end
 
@@ -474,7 +477,7 @@ class Sunshine < Formula
 
   test do
     # test that the binary runs at all
-    system bin/"sunshine", "--version"
+    system bin/"sunmeow", "--version"  # MEOW-TOUCH(rebrand): the binary we actually install.
 
     if IS_UPSTREAM_REPO
       artifact_dir = release_homebrew_testpath
