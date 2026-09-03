@@ -2,9 +2,12 @@
  * @file tests/unit/test_entry_handler.cpp
  * @brief Test src/entry_handler.*.
  */
+
+// test includes
 #include "../tests_common.h"
 #include "../tests_log_checker.h"
 
+// local includes
 #include <src/entry_handler.h>
 
 TEST(EntryHandlerTests, LogPublisherDataTest) {
@@ -12,6 +15,7 @@ TEST(EntryHandlerTests, LogPublisherDataTest) {
   log_publisher_data();
 
   // check if specific log messages exist
+  // MEOW-TOUCH(rebrand): our test log name; must match tests_environment.h.
   ASSERT_TRUE(log_checker::line_starts_with("test_sunmeow.log", "Info: Package Publisher: "));
   ASSERT_TRUE(log_checker::line_starts_with("test_sunmeow.log", "Info: Publisher Website: "));
   ASSERT_TRUE(log_checker::line_starts_with("test_sunmeow.log", "Info: Get support: "));

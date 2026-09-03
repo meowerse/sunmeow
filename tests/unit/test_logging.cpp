@@ -2,17 +2,22 @@
  * @file tests/unit/test_logging.cpp
  * @brief Test src/logging.*.
  */
+
+// test includes
 #include "../tests_common.h"
 #include "../tests_log_checker.h"
 
+// standard includes
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <iterator>
 #include <random>
-#include <src/logging.h>
 #include <string>
 #include <string_view>
+
+// local includes
+#include <src/logging.h>
 
 namespace {
   std::array log_levels = {
@@ -24,7 +29,7 @@ namespace {
     std::tuple("fatal", &fatal),
   };
 
-  constexpr auto log_file = "test_sunmeow.log";
+  constexpr auto log_file = "test_sunmeow.log";  // MEOW-TOUCH(rebrand): matches tests_environment.h
 
   /**
    * @brief Write test content to a log file.

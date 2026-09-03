@@ -28,10 +28,12 @@ echo "
  ------            # This message
 
          $ARGV0  --install, -i
-                   # Install input rules sunshine.service files. Restart required.
+                   # MEOW-TOUCH(rebrand): upstream reworded this in the sync; the unit we
+                   # install is app-meow.alxnko.sunmeow.service, not sunshine.service.
+                   # Install or update input rules and app-meow.alxnko.sunmeow.service files.
 
          $ARGV0  --remove, -r
-                   # Remove input rules sunshine.service files.
+                   # Remove input rules and app-meow.alxnko.sunmeow.service files.
 
          $ARGV0  --appimage-help
                    # Show available AppImage options
@@ -52,6 +54,8 @@ function install() {
   sudo udevadm control --reload-rules
   sudo udevadm trigger --property-match=DEVNAME=/dev/uinput
   sudo udevadm trigger --property-match=DEVNAME=/dev/uhid
+  sudo udevadm trigger --subsystem-match=hidraw
+  sudo udevadm trigger --subsystem-match=input
 
   # sunmeow service
   mkdir -p ~/.config/systemd/user
@@ -69,6 +73,7 @@ function install() {
 function remove() {
   # remove input rules
   sudo rm -f /etc/udev/rules.d/60-sunmeow.rules
+  sudo udevadm control --reload-rules
 
   # remove uhid module loading config
   sudo rm -f /etc/modules-load.d/60-sunmeow.conf

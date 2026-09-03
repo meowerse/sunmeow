@@ -244,9 +244,15 @@ the modern PSA APIs`, and nanors SIMD/GFNI + enet updates.
   local misconfiguration is how a fork silently drifts off upstream.
 
 **"Moonlight upstream is dead" is false**, and acting on it would be a costly mistake. It is
-true only of the Android app (`moonlight-android`: last `master` commit 2024-07-27, last
-release v12.1 Feb 2024). The protocol core is actively maintained — `moonlight-common-c` and
-`moonlight-qt` both had commits in August 2026. Never generalise the app's dormancy to the org.
+now false of *every* repo in the org, including the one it used to be true of.
+`moonlight-android` revived: last `master` commit **2026-09-02** (`98c12beb`), with 30 commits
+in 2026-08/09 alone (verified 2026-09-03). The protocol core is actively maintained —
+`moonlight-common-c` and `moonlight-qt` both had commits in August 2026.
+
+The one thing that did *not* revive is the **release** cadence: `moonlight-android`'s newest
+GitHub release is still v12.1 from **2024-02-28**. So the org ships patches, not versions —
+check commits, never releases, when deciding whether something is maintained. `moonmeow`'s
+CLAUDE.md §1 records the same finding and the resulting cherry-pick-not-merge policy.
 
 ---
 

@@ -32,9 +32,19 @@ else()
     find_package(Udev)
 
     if(UDEV_FOUND)
-        install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunmeow.rules"
-                DESTINATION "${UDEV_RULES_INSTALL_DIR}")
+        set(SUNSHINE_UDEV_RULES_INSTALL_DIR "${UDEV_RULES_INSTALL_DIR}")
+    else()
+        set(SUNSHINE_UDEV_RULES_INSTALL_DIR "${CMAKE_INSTALL_LIBDIR}/udev/rules.d")
+        message(WARNING
+                "Could not determine the host udev rules directory; "
+                "installing Sunmeow rules to ${SUNSHINE_UDEV_RULES_INSTALL_DIR}")
     endif()
+    # MEOW-TOUCH(rebrand): upstream's restructure is kept -- it adds a fallback directory so
+    # the rules are installed even when udev's pkg-config is missing, instead of silently
+    # skipping them. Only the filename is ours: upstream's line named 60-sunshine.rules,
+    # which this fork deleted in the rename, so as merged it would install a nonexistent file.
+    install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/linux/misc/60-sunmeow.rules"
+            DESTINATION "${SUNSHINE_UDEV_RULES_INSTALL_DIR}")
     if(SYSTEMD_FOUND)
         install(FILES "${CMAKE_CURRENT_BINARY_DIR}/app-${PROJECT_FQDN}.service"
                 DESTINATION "${SYSTEMD_USER_UNIT_INSTALL_DIR}")
