@@ -108,7 +108,14 @@ namespace platf {
       homedir = getpwuid(geteuid())->pw_dir;
     }
 
-    return fs::path {homedir} / ".config/sunshine"sv;
+    // MEOW-TOUCH(rebrand): our config dir, matching the Linux path in platform/linux/misc.cpp.
+    // NOTE: no sunshine->sunmeow migration exists on ANY platform -- Linux deliberately does not
+    // migrate either (misc.cpp), because that would copy the distro package's config. So a macOS
+    // user upgrading from an earlier sunmeow build re-pairs once. Same posture as Linux, stated
+    // here because it was previously stated nowhere for macOS.
+    // Left at "sunshine" this fork would read and write the distro package's directory on a
+    // machine that has both -- the exact collision the rebrand exists to prevent.
+    return fs::path {homedir} / ".config/sunmeow"sv;
   }
 
   using ifaddr_t = util::safe_ptr<ifaddrs, freeifaddrs>;

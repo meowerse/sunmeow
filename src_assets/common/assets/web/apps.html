@@ -570,6 +570,8 @@
   import Checkbox from './Checkbox.vue'
   import { apiFetch } from './fetch_utils'
   import SunshineVersion from './sunshine_version'
+  // MEOW-TOUCH(web-identity): our releases, not upstream's. @see meow_release_check.js
+  import { fetchLatestRelease } from './meow_release_check'
   import { Modal } from 'bootstrap/dist/js/bootstrap'
   import {
     ArrowDown,
@@ -724,9 +726,9 @@
           this.version = new SunshineVersion(null, r.version);
         });
 
-      fetch("https://api.github.com/repos/LizardByte/Sunshine/releases/latest")
-        .then((r) => r.json())
-        .then((r) => this.githubVersion = new SunshineVersion(r, null))
+      // MEOW-TOUCH(web-identity): null when we have published nothing; callers null-guard.
+      fetchLatestRelease()
+        .then((r) => this.githubVersion = r ? new SunshineVersion(r, null) : null)
         .catch((e) => console.error(e));
     },
     methods: {
