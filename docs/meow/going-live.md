@@ -22,8 +22,23 @@ systemctl --user show sunshine -p FragmentPath
 
 Two facts that matter more than they look:
 
-- `sunshine.service` is an **alias**; the real unit is `app-dev.lizardbyte.app.Sunshine.service`.
-  Commands aimed at the alias work, but `systemctl --user status sunshine` reporting `alias`
+- `sunshine.service` is the **distro package's** alias; the real unit there is
+  `app-dev.lizardbyte.app.Sunshine.service`. This fork does not claim that name -- its own unit
+  is `app-meow.alxnko.sunmeow.service`, aliased to `sunmeow.service`.
+
+  **Upgrading from a build made before that fix:** the old alias was materialised at enable
+  time and `systemctl --user disable` only removes symlinks the *current* unit text declares,
+  so a stale `~/.config/systemd/user/sunshine.service` pointing at our unit survives the
+  upgrade and keeps shadowing the distro's. Remove it once:
+
+  ```bash
+  systemctl --user disable app-meow.alxnko.sunmeow.service
+  rm -f ~/.config/systemd/user/sunshine.service
+  systemctl --user daemon-reload
+  systemctl --user --now enable app-meow.alxnko.sunmeow.service
+  ```
+
+  Commands aimed at our alias work, but `systemctl --user status sunmeow` reporting `alias`
   rather than a state is not an error.
 - The packaged binary already carries the capabilities KMS capture needs:
   ```bash
@@ -37,12 +52,19 @@ Two facts that matter more than they look:
 
 ## 2. Back up the configuration first — this is not boilerplate
 
-Both binaries read the same directory, `~/.config/sunshine/`. It is the only shared mutable
-state between them, and it is where every hazard in this document lives.
+Since the rebrand the two binaries **no longer share a directory**: the distro package reads
+`~/.config/sunshine/`, this fork reads `~/.config/sunmeow/`. That separation is the point of
+the rebrand -- there is no shared mutable state left to corrupt, and switching between the two
+no longer risks one overwriting the other's settings, apps or paired clients.
+
+Back ours up anyway, because the hazards below are ours:
 
 ```bash
-cp -a ~/.config/sunshine ~/.config/sunshine.bak-$(date +%F-%H%M)
+cp -a ~/.config/sunmeow ~/.config/sunmeow.bak-$(date +%F-%H%M)
 ```
+
+If you are coming from a pre-rebrand build of this fork, your state is still under
+`~/.config/sunshine/`; back that up too and copy it across.
 
 `sunmeow_state.json` holds your **paired clients**. Losing it does not lose settings or apps,
 but every paired device has to re-pair with a PIN.
@@ -52,7 +74,7 @@ but every paired device has to re-pair with a PIN.
 > the genuine pairing code, which persists to `config::nvhttp.file_state`; `$HOME` does not
 > redirect it. Running `./build/tests/test_sunshine` therefore **overwrites
 > `sunmeow_state.json` with a fixture** (a single device literally named `test`) and creates a
-> stray `~/.config/sunshine/tests/` directory. A running Sunshine keeps the real client list in
+> stray `~/.config/sunmeow/tests/` directory. A running Sunshine keeps the real client list in
 > memory and will write it back when it next saves — so the damage is latent, not immediate, and
 > it only becomes real if the process restarts first. Check `docs/meow/TOUCHPOINTS.md` and the
 > repository's open branches for the sandbox fix before assuming this still applies.
@@ -104,7 +126,7 @@ Both ship **off**. That is not timidity: each changes what the client sees, and 
 silently started cropping would be a worse bug than one that does nothing.
 
 Set these in the web UI (they are in the **Audio/Video** tab) or directly in
-`~/.config/sunshine/sunmeow.conf`:
+`~/.config/sunmeow/sunmeow.conf`:
 
 | Key | Default | What it does |
 | --- | --- | --- |

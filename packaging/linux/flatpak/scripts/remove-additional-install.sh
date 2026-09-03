@@ -1,10 +1,12 @@
 #!/bin/sh
 
 # User Service
-systemctl --user stop app-dev.lizardbyte.app.Sunshine
-rm "$HOME/.config/systemd/user/app-dev.lizardbyte.app.Sunshine.service"
+# MEOW-TOUCH(rebrand): stop and remove OUR unit. The upstream name belongs to the distro
+# package -- stopping that one is both ineffective here and hostile to a co-installed Sunshine.
+systemctl --user stop app-meow.alxnko.sunmeow
+rm "$HOME/.config/systemd/user/app-meow.alxnko.sunmeow.service"
 systemctl --user daemon-reload
-echo "Sunshine User Service has been removed."
+echo "Sunmeow User Service has been removed."
 
 # Remove rules
 flatpak-spawn --host pkexec sh -c "rm /etc/modules-load.d/60-sunmeow.conf"

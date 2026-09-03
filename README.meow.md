@@ -230,10 +230,10 @@ Capture backend selection is the thing that actually goes wrong here.
   `/tmp` exists because `setcap` fails on filesystems without xattr support, and
   `cap_sys_nice` is needed alongside `cap_sys_admin`:
   ```bash
-  sudo cp build/sunshine /tmp
-  sudo setcap cap_sys_admin,cap_sys_nice+p /tmp/sunshine
-  sudo getcap /tmp/sunshine
-  sudo mv /tmp/sunshine build/sunshine
+  sudo cp build/sunmeow /tmp
+  sudo setcap cap_sys_admin,cap_sys_nice+p /tmp/sunmeow
+  sudo getcap /tmp/sunmeow
+  sudo mv /tmp/sunmeow build/sunmeow
   ```
   Without it, capture silently falls back or fails.
 - Plasma also exposes `kwingrab` and the XDG portal path (`portalgrab`/`pipewire`). If the
@@ -247,7 +247,7 @@ Capture backend selection is the thing that actually goes wrong here.
   nvidia-smi                    # NVENC (RTX 5050) visibility
   ```
   Encode on the NVIDIA card while the desktop is composited by the iGPU requires the captured
-  frames to cross devices; if NVENC is unavailable, sunshine falls back to VAAPI on the iGPU.
+  frames to cross devices; if NVENC is unavailable, sunmeow falls back to VAAPI on the iGPU.
 - **Set `upnp` off.** It is off by default and must stay off — automatic port forwarding
   punches a hole in the router and defeats a Tailscale-only deployment
   ([`CLAUDE.md` §7](./CLAUDE.md)).

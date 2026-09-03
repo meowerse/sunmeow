@@ -26,6 +26,32 @@ elseif(UNIX)
     # configure service
     configure_file(packaging/linux/app-${PROJECT_FQDN}.service.in app-${PROJECT_FQDN}.service @ONLY)
 
+    # MEOW-TOUCH(rebrand): fail the configure rather than ship a unit that starts the distro
+    # package's binary. That bug shipped once and was invisible from the outside -- the unit
+    # was valid, the service came up, and the only symptom was that our config directory
+    # stayed empty. A generated artifact is the only place the substituted result can be
+    # checked, so it is checked here instead of trusted.
+    file(READ "${CMAKE_CURRENT_BINARY_DIR}/app-${PROJECT_FQDN}.service" _meow_unit)
+    if(NOT _meow_unit MATCHES "ExecStart=[^\n]*${SUNMEOW_BINARY_NAME}")
+        message(FATAL_ERROR
+                "Generated systemd unit does not start ${SUNMEOW_BINARY_NAME}. "
+                "SUNSHINE_EXECUTABLE_PATH is '${SUNSHINE_EXECUTABLE_PATH}'.")
+    endif()
+    # Anchored to a line start: the file documents the old `Alias=sunshine.service` in a
+    # comment on purpose, and an unanchored match cannot tell that apart from a live directive.
+    #
+    # `sunshine` must also be the directive's terminal token -- followed by a space (the flatpak
+    # `--command=sunshine <fqdn>` form), a dot (`sunshine.service`), or the end of the line.
+    # Matching it anywhere would fail the configure on a perfectly correct unit whose install
+    # prefix merely contains the word, e.g. `ExecStart=/usr/share/sunshine/bin/sunmeow` -- which
+    # cmake/packaging/unix.cmake can still produce when CMAKE_INSTALL_PREFIX is empty.
+    if(_meow_unit MATCHES "\n(ExecStart|ExecStop|Alias)=[^\n]*sunshine[ .\n]")
+        message(FATAL_ERROR
+                "Generated systemd unit still names 'sunshine' in a directive. "
+                "That is the distro package's binary and unit name, not ours.")
+    endif()
+    unset(_meow_unit)
+
     # configure kwin desktop permission file
     if (${SUNSHINE_ENABLE_KWIN})
         configure_file(packaging/linux/${PROJECT_FQDN}.kwin.desktop.in ${PROJECT_FQDN}.kwin.desktop @ONLY)

@@ -30,6 +30,13 @@ set(PROJECT_LICENSE "GPL-3.0-only")
 # collided with it, and portal notifications could not tell them apart.
 set(PROJECT_FQDN "meow.alxnko.sunmeow")
 
+# MEOW-TOUCH(rebrand): the one place the installed executable is named. Everything that
+# builds it, installs it, or merely *refers* to it reads this. The rebrand originally spelled
+# `sunmeow` in one place and left `sunshine` in the six that only name it, which is how the
+# generated unit came to launch the distro package's binary -- silently, because that binary
+# runs. One variable makes that class of mistake unrepresentable rather than merely fixed.
+set(SUNMEOW_BINARY_NAME "sunmeow")
+
 set(PROJECT_BRIEF_DESCRIPTION "GameStream host for Moonmeow")  # must be <= 35 characters
 
 set(PROJECT_LONG_DESCRIPTION "Offering low latency, cloud gaming server capabilities with support for AMD, Intel, \

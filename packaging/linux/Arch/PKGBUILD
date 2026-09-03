@@ -142,7 +142,7 @@ build() {
       -D BUILD_DOCS=OFF
       -D BUILD_WERROR=ON
       -D CMAKE_INSTALL_PREFIX=/usr
-      -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine
+      -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/sunmeow  # MEOW-TOUCH(rebrand)
       -D SUNSHINE_ASSETS_DIR="share/sunshine"
       -D SUNSHINE_PUBLISHER_NAME='LizardByte'
       -D SUNSHINE_PUBLISHER_WEBSITE='https://app.lizardbyte.dev'
@@ -177,10 +177,13 @@ build() {
 
     cmake "${_cmake_options[@]}"
 
-    appstreamcli validate "${_appstreamcli_arguments[@]}" "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-    appstream-util validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.desktop"
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.terminal.desktop"
+    # MEOW-TOUCH(rebrand): these artifacts are named from PROJECT_FQDN, which is
+    # meow.alxnko.sunmeow. Validating the upstream names fails build() outright -- the files
+    # under those names are never generated here.
+    appstreamcli validate "${_appstreamcli_arguments[@]}" "build/meow.alxnko.sunmeow.metainfo.xml"
+    appstream-util validate "build/meow.alxnko.sunmeow.metainfo.xml"
+    desktop-file-validate "build/meow.alxnko.sunmeow.desktop"
+    desktop-file-validate "build/meow.alxnko.sunmeow.terminal.desktop"
 
     cmake --build build
 }
@@ -239,7 +242,7 @@ check() {
     fi
 
     cd "${srcdir}/build"
-    ./sunshine --version
+    ./sunmeow --version  # MEOW-TOUCH(rebrand): OUTPUT_NAME builds `sunmeow`, not `sunshine`.
 }
 
 package() {

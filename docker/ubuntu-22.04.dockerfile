@@ -122,8 +122,10 @@ RUN <<_SETUP_USER
 set -e
 groupadd -f -g "${PGID}" "${UNAME}"
 useradd -lm -d ${HOME} -s /bin/bash -g "${PGID}" -u "${PUID}" "${UNAME}"
-mkdir -p ${HOME}/.config/sunshine
-ln -s ${HOME}/.config/sunshine /config
+# MEOW-TOUCH(rebrand): the binary reads ~/.config/sunmeow, so the /config volume the
+# image documents must point there or it is mounted at a directory nothing ever reads.
+mkdir -p ${HOME}/.config/sunmeow
+ln -s ${HOME}/.config/sunmeow /config
 chown -R ${UNAME} ${HOME}
 _SETUP_USER
 
@@ -131,4 +133,6 @@ USER ${UNAME}
 WORKDIR ${HOME}
 
 # entrypoint
-ENTRYPOINT ["/usr/bin/sunshine"]
+# MEOW-TOUCH(rebrand): the installed .deb ships /usr/bin/sunmeow; the upstream path does
+# not exist in this image, so the container exited immediately on start.
+ENTRYPOINT ["/usr/bin/sunmeow"]
