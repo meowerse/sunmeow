@@ -10,6 +10,7 @@
 struct SunshineEnvironment: testing::Environment {
   void SetUp() override {
     mail::man = std::make_shared<safe::mail_raw_t>();
+    // MEOW-TOUCH(rebrand): our test log name; test_logging/test_entry_handler assert on it.
     deinit_log = logging::init(0, "test_sunmeow.log");
   }
 

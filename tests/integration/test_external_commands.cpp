@@ -151,6 +151,7 @@ constexpr auto SIMPLE_COMMAND = IS_WINDOWS ? "where cmd" : "which sh";
 #ifdef UDEVADM_EXECUTABLE
   #define UDEV_TESTS \
     ExternalCommandTestData { \
+      /* MEOW-TOUCH(rebrand): our renamed udev rule. */ \
       std::format("{} verify {}/src_assets/linux/misc/60-sunmeow.rules", UDEVADM_EXECUTABLE, SUNSHINE_TEST_BIN_DIR), \
       "linux", \
       true, \

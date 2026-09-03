@@ -29,7 +29,7 @@ namespace {
     std::tuple("fatal", &fatal),
   };
 
-  constexpr auto log_file = "test_sunmeow.log";
+  constexpr auto log_file = "test_sunmeow.log";  // MEOW-TOUCH(rebrand): matches tests_environment.h
 
   /**
    * @brief Write test content to a log file.

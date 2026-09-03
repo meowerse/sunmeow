@@ -28,10 +28,12 @@ echo "
  ------            # This message
 
          $ARGV0  --install, -i
-                   # Install or update input rules and sunshine.service files.
+                   # MEOW-TOUCH(rebrand): upstream reworded this in the sync; the unit we
+                   # install is app-meow.alxnko.sunmeow.service, not sunshine.service.
+                   # Install or update input rules and app-meow.alxnko.sunmeow.service files.
 
          $ARGV0  --remove, -r
-                   # Remove input rules sunshine.service files.
+                   # Remove input rules and app-meow.alxnko.sunmeow.service files.
 
          $ARGV0  --appimage-help
                    # Show available AppImage options

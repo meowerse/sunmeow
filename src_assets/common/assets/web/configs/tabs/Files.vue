@@ -21,6 +21,8 @@ const config = ref(props.config)
     <!-- Credentials File -->
     <div class="mb-3">
       <label for="credentials_file" class="form-label">{{ $t('config.credentials_file') }}</label>
+      <!-- MEOW-TOUCH(rebrand): placeholders must show OUR default filenames; they are what a
+           user copies when setting the path by hand. -->
       <input type="text" class="form-control" id="credentials_file" placeholder="sunmeow_state.json" v-model="config.credentials_file" />
       <div class="form-text">{{ $t('config.credentials_file_desc') }}</div>
     </div>

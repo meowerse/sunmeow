@@ -176,6 +176,8 @@ set(INTEGRATION_TEST_FILES
     "docs/configuration.md"
     "src_assets/common/assets/web/public/assets/locale/en.json"
     "src_assets/common/assets/web/configs/tabs/General.vue"
+    # MEOW-TOUCH(rebrand): renamed from 60-sunshine.rules. Upstream edits this list; if a
+    # future sync reverts this name, test_external_commands verifies a nonexistent file.
     "src_assets/linux/misc/60-sunmeow.rules"
 )
 

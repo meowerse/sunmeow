@@ -15,6 +15,9 @@ if exist "%OLD_DIR%\apps.json" (
         icacls "%NEW_DIR%\apps.json" /reset
     )
 )
+:: MEOW-TOUCH(rebrand): migrates OUR files. Against upstream's names this would move the
+:: distro Sunshine package's config into our directory -- see src/platform/linux/misc.cpp,
+:: where the same hazard is documented for appdata().
 if exist "%OLD_DIR%\sunmeow.conf" (
     if not exist "%NEW_DIR%\sunmeow.conf" (
         move "%OLD_DIR%\sunmeow.conf" "%NEW_DIR%\sunmeow.conf"
