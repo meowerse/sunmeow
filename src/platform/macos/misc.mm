@@ -108,7 +108,10 @@ namespace platf {
       homedir = getpwuid(geteuid())->pw_dir;
     }
 
-    return fs::path {homedir} / ".config/sunshine"sv;
+    // MEOW-TOUCH(rebrand): our config dir, matching the Linux path in platform/linux/misc.cpp.
+    // Left at "sunshine" this fork would read and write the distro package's directory on a
+    // machine that has both -- the exact collision the rebrand exists to prevent.
+    return fs::path {homedir} / ".config/sunmeow"sv;
   }
 
   using ifaddr_t = util::safe_ptr<ifaddrs, freeifaddrs>;
