@@ -479,6 +479,14 @@ class Sunshine < Formula
     # test that the binary runs at all
     system bin/"sunmeow", "--version"  # MEOW-TOUCH(rebrand): the binary we actually install.
 
+    if OS.linux?
+      # MEOW-TOUCH(rebrand): these assertions arrived in the c75d5d76 sync and name the files
+      # upstream installs. We install 60-sunmeow.*, so against upstream's names the formula's
+      # own test would fail on a correct build.
+      assert_path_exists lib/"udev/rules.d/60-sunmeow.rules"
+      assert_path_exists lib/"modules-load.d/60-sunmeow.conf"
+    end
+
     if IS_UPSTREAM_REPO
       artifact_dir = release_homebrew_testpath
       if artifact_dir

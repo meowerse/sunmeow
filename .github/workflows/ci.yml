@@ -97,7 +97,9 @@ jobs:
       # `third-party/build-deps` alone is 362 MB (nine platforms' prebuilt FFmpeg;
       # this job reads only `dist/Linux-x86_64`).
       - name: Checkout
-        uses: actions/checkout@v7
+        # Pinned to a SHA rather than a moving tag, adopted from upstream in this sync:
+        # a tag can be repointed at new code, a SHA cannot.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Submodules are initialised in the step below instead of here, so that
           # third-party/build-deps can be checked out WITHOUT recursing. See there.
