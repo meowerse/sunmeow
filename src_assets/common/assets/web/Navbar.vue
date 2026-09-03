@@ -2,6 +2,8 @@
   <div>
     <nav class="navbar navbar-expand-lg navbar-sunshine">
       <div class="container-fluid">
+        <!-- MEOW-TOUCH(web-identity): brand tooltip and image alt. The alt is what a screen
+             reader announces, so it is product identity, not decoration. -->
         <a class="navbar-brand" href="./" title="Sunmeow">
           <img src="/images/logo-sunshine-45.png" height="45" alt="Sunmeow">
         </a>

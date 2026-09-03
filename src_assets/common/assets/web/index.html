@@ -97,7 +97,7 @@
           {{ $t('index.installed_version_not_stable') }}
         </div>
 
-        <div v-else-if="(!preReleaseBuildAvailable || !notifyPreReleases) && !stableBuildAvailable && !buildVersionIsDirty">
+        <div v-else-if="githubVersion && (!preReleaseBuildAvailable || !notifyPreReleases) && !stableBuildAvailable && !buildVersionIsDirty">
           <div class="alert alert-success my-3">
             <check-circle :size="18" class="icon"></check-circle>
             {{ $t('index.version_latest') }}
@@ -182,7 +182,7 @@
     sanitize: false
   });
 
-  console.log("Hello, Sunmeow!")
+  console.log("Hello, Sunmeow!")  // MEOW-TOUCH(web-identity): was "Hello, Sunshine!"
   let app = createApp({
     components: {
       Navbar,
@@ -223,10 +223,10 @@
         // release, which the computed guards below already treat as "nothing to compare".
         const latestRelease = await fetchLatestRelease();
         this.githubVersion = latestRelease ? new SunshineVersion(latestRelease, null) : null;
-        console.log("Latest release: ", this.githubVersion ? this.githubVersion.version : "none published")
+        console.log("Latest release: ", this.githubVersion ? this.githubVersion.version : "unavailable (see debug log)")
         const preRelease = await fetchLatestPreRelease();
         this.preReleaseVersion = preRelease ? new SunshineVersion(preRelease, null) : null;
-        console.log("Latest pre-release: ", this.preReleaseVersion ? this.preReleaseVersion.version : "none published")
+        console.log("Latest pre-release: ", this.preReleaseVersion ? this.preReleaseVersion.version : "unavailable (see debug log)")
 
         // The Virtual HID Driver also backs relative mouse input when controllers are disabled.
         if (this.platform === 'windows') {
