@@ -362,13 +362,32 @@ namespace nvhttp {
       return;
     }
 
+    // MEOW-TOUCH(uniqueid): an EMPTY uniqueid must be treated exactly like a missing one.
+    // `get_optional` returns an engaged optional for `"uniqueid": ""`, so checking only for
+    // absence leaves `http::unique_id` empty forever -- it is never regenerated, and it is
+    // re-serialised as empty by save_state() on every shutdown. Sunshine then advertises
+    // `<uniqueid/>` in /serverinfo, and Moonlight treats uniqueid as a mandatory field: its
+    // XML pull parser emits no TEXT event for an empty element, so the client throws
+    // "Missing mandatory field in host response: uniqueid" and the host can never be added
+    // or paired. A state file written with an empty uniqueid is therefore permanently
+    // unpairable until the value is regenerated here.
     auto unique_id_p = tree.get_optional<std::string>("root.uniqueid");
     if (!unique_id_p) {
       // This file doesn't contain moonlight credentials
       http::unique_id = uuid_util::uuid_t::generate().string();
       return;
     }
-    http::unique_id = std::move(*unique_id_p);
+
+    if (unique_id_p->empty()) {
+      // Recover the host identity, then KEEP LOADING: the early return above is only correct
+      // when the key is absent (no credentials in the file at all). A file that carries an
+      // empty id may still carry a full `named_devices` list, and returning here would drop
+      // every paired client from memory -- which save_state() would then persist as empty,
+      // destroying the pairings this fix exists to protect.
+      http::unique_id = uuid_util::uuid_t::generate().string();
+    } else {
+      http::unique_id = std::move(*unique_id_p);
+    }
 
     auto root = tree.get_child("root");
     client_t client;
