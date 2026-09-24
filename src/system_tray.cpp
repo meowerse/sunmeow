@@ -64,13 +64,13 @@
 
   // lib includes
   #include <boost/filesystem.hpp>
-  #include <boost/process/v1/environment.hpp>
   #include <tray.h>
   #ifdef _WIN32
     #include <libvirtualhid/license.hpp>
   #endif
 
   // local includes
+  #include "config.h"
   #include "confighttp.h"
   #include "display_device.h"
   #include "logging.h"
@@ -140,24 +140,44 @@ namespace system_tray {
      *
      * @return Persistent string storage backing the tray menu label pointers.
      */
-    std::array<std::string, 11> &virtualhid_license_menu_text_storage() {
-      static std::array<std::string, 11> menu_text;
+    std::array<std::string, 9> &virtualhid_license_menu_text_storage() {
+      static std::array<std::string, 9> menu_text;
       return menu_text;
+    }
+
+    /**
+     * @brief Access storage for the Virtual HID Driver compatibility notification.
+     *
+     * @return Persistent string storage backing the tray notification pointer.
+     */
+    std::string &virtualhid_driver_notification_text_storage() {
+      static std::string notification_text;
+      return notification_text;
+    }
+
+    /**
+     * @brief Access persistent storage for the Virtual HID Driver benefits menu.
+     *
+     * The tray C API requires a mutable submenu pointer even though Sunshine
+     * treats these entries as immutable.
+     *
+     * @return Persistent Virtual HID Driver benefits menu storage.
+     */
+    std::array<struct tray_menu, 5> &virtualhid_benefits_menu_storage() {
+      static std::array<struct tray_menu, 5> benefits_menu {{
+        {.text = "Xbox One, Xbox Series, DualSense (DS5), Switch Pro, and Generic", .disabled = 1},
+        {.text = "Raw Input keyboard and mouse for physical-style input", .disabled = 1},
+        {.text = "Motion, touchpads, LEDs, and adaptive triggers where supported", .disabled = 1},
+        {.text = "Actively developed and supported by LizardByte", .disabled = 1},
+        {},
+      }};
+      return benefits_menu;
     }
   #endif
   }  // namespace
 
   #ifdef _WIN32
   constexpr auto LIBVIRTUALHID_RELEASES_URL = "https://github.com/LizardByte/libvirtualhid/releases/latest"sv;  ///< Latest Virtual HID Driver release.
-  static std::array<struct tray_menu, 7> virtualhid_benefits_menu {{
-    {.text = "Xbox One, Xbox Series, DualSense (DS5), Switch Pro, and Generic", .disabled = 1},
-    {.text = "Raw Input keyboard and mouse for physical-style input", .disabled = 1},
-    {.text = "Motion, touchpads, LEDs, and adaptive triggers where supported", .disabled = 1},
-    {.text = "Actively developed and supported by LizardByte", .disabled = 1},
-    {.text = "-"},
-    {.text = "Open License Settings", .cb = tray_virtualhid_license_cb},
-    {},
-  }};  ///< Persistent Virtual HID Driver benefits shown in the notification area.
   #endif
 
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
@@ -180,7 +200,7 @@ namespace system_tray {
   #ifdef _WIN32
   void tray_virtualhid_license_cb([[maybe_unused]] struct tray_menu *item) {
     BOOST_LOG(info) << "Opening Virtual HID Driver license settings from system tray"sv;
-    launch_ui("/troubleshooting#virtualhid-license");
+    launch_ui(config::input.gamepad_driver == config::GAMEPAD_DRIVER_VIGEMBUS ? "/config#gamepad_driver" : "/troubleshooting#virtualhid-license");
   }
 
   void tray_virtualhid_download_cb([[maybe_unused]] struct tray_menu *item) {
@@ -247,12 +267,12 @@ namespace system_tray {
    *
    * @return Menu storage with a checking state, benefits, license settings, and driver download.
    */
-  std::array<struct tray_menu, 11> initial_virtualhid_license_menu() {
-    std::array<struct tray_menu, 11> menu {};
+  std::array<struct tray_menu, 9> initial_virtualhid_license_menu() {
+    std::array<struct tray_menu, 9> menu {};
     menu[0] = {.text = "Status: Checking", .disabled = 1};
     menu[1] = {.text = "-"};
-    menu[2] = {.text = "Open License Settings", .cb = tray_virtualhid_license_cb};
-    menu[3] = {.text = "Virtual HID Driver Benefits", .submenu = virtualhid_benefits_menu.data()};
+    menu[2] = {.text = "Get/Manage License", .cb = tray_virtualhid_license_cb};
+    menu[3] = {.text = "Virtual HID Driver Benefits", .submenu = virtualhid_benefits_menu_storage().data()};
     menu[4] = {.text = "Download Virtual HID Driver", .cb = tray_virtualhid_download_cb};
     return menu;
   }
@@ -318,6 +338,7 @@ namespace system_tray {
     tray.notification_cb = nullptr;
     #ifdef _WIN32
     virtualhid_license_menu_text_storage() = {};
+    virtualhid_driver_notification_text_storage().clear();
     virtualhid_license_menu = initial_virtualhid_license_menu();
     #endif
   }
@@ -411,7 +432,6 @@ namespace system_tray {
     virtualhid_license_menu_text_storage() = {};
 
     set_virtualhid_license_menu_item(0, std::format("Status: {}", virtualhid_license_state_label(license.state)), true);
-    auto separator_index = 5U;
     if (license.licensed()) {
       set_virtualhid_license_menu_item(
         1,
@@ -430,9 +450,6 @@ namespace system_tray {
           std::format("Machine activations: {} / {}", license.activation_usage, license.activation_limit),
         true
       );
-      separator_index = 4U;
-      set_virtualhid_license_menu_item(5, "View License Details", false, tray_virtualhid_license_cb);
-      set_virtualhid_license_menu_item(6, "Manage License", false, tray_virtualhid_license_cb);
     } else {
       set_virtualhid_license_menu_item(1, std::string {virtualhid_license_state_detail(license.state)}, true);
       set_virtualhid_license_menu_item(2, "Driver-backed keyboard, mouse, and gamepads are locked", true);
@@ -441,15 +458,12 @@ namespace system_tray {
         license.service_available ? "License service: Available" : "License service: Unavailable",
         true
       );
-      set_virtualhid_license_menu_item(4, "Activate this machine to use Virtual HID Driver", true);
-      set_virtualhid_license_menu_item(6, "Activate License", false, tray_virtualhid_license_cb);
-      set_virtualhid_license_menu_item(7, "Buy License", false, tray_virtualhid_license_cb);
     }
-    virtualhid_license_menu[separator_index] = {.text = "-"};
-    const auto benefits_index = separator_index + 3U;
-    set_virtualhid_license_menu_item(benefits_index, "Virtual HID Driver Benefits", false);
-    virtualhid_license_menu[benefits_index].submenu = virtualhid_benefits_menu.data();
-    set_virtualhid_license_menu_item(benefits_index + 1U, "Download Virtual HID Driver", false, tray_virtualhid_download_cb);
+    virtualhid_license_menu[4] = {.text = "-"};
+    set_virtualhid_license_menu_item(5, "Get/Manage License", false, tray_virtualhid_license_cb);
+    set_virtualhid_license_menu_item(6, "Virtual HID Driver Benefits", false);
+    virtualhid_license_menu[6].submenu = virtualhid_benefits_menu_storage().data();
+    set_virtualhid_license_menu_item(7, "Download Virtual HID Driver", false, tray_virtualhid_download_cb);
   }
 
   /**
@@ -467,10 +481,18 @@ namespace system_tray {
     clear_tray_notification();
     rebuild_virtualhid_license_menu(license);
 
-    if (notify_if_unlicensed && !license.licensed()) {
-      tray.notification_title = "Activate Virtual HID Driver";
+    if (config::input.gamepad_driver.empty()) {
+      tray.notification_title = "Choose a Gamepad Driver";
       tray.notification_text =
-        "Adds a Raw Input keyboard and mouse plus Xbox One/Series, DualSense (DS5), Switch Pro, and Generic gamepads. Actively maintained by LizardByte. Click to activate or buy a license; details remain in the tray menu.";
+        "Choose a driver in Input settings. Virtual HID Driver is a paid upgrade; ViGEmBus is limited and has reached end of life.";
+      tray.notification_icon = tray.allIconPaths[4];
+      tray.notification_cb = []() {
+        launch_ui("/config#gamepad_driver");
+      };
+    } else if (config::input.gamepad_driver != config::GAMEPAD_DRIVER_VIGEMBUS && notify_if_unlicensed && !license.licensed()) {
+      tray.notification_title = "Virtual HID Driver License";
+      tray.notification_text =
+        "Get or manage a license, or use the limited, end-of-life ViGEmBus driver.";
       tray.notification_icon = tray.allIconPaths[4];
       tray.notification_cb = []() {
         launch_ui("/troubleshooting#virtualhid-license");
@@ -485,6 +507,49 @@ namespace system_tray {
   void prepare_tray_virtualhid_license() {
     const auto result = lvh::get_license_status();
     update_tray_virtualhid_license(result.license, !result.license.licensed());
+  }
+
+  void update_tray_virtualhid_driver(
+    const bool installed,
+    const std::string_view version,
+    const bool version_compatible,
+    const std::string_view supported_versions
+  ) {
+    if (config::input.gamepad_driver.empty() || config::input.gamepad_driver == config::GAMEPAD_DRIVER_VIGEMBUS || !installed || version_compatible) {
+      return;
+    }
+
+    const std::scoped_lock lock(tray_state_mutex());
+    clear_tray_notification();
+
+    const auto displayed_version = version.empty() ? "unknown" : std::format("v{}", version);
+    auto &notification_text = virtualhid_driver_notification_text_storage();
+    notification_text = std::format(
+      "Installed Virtual HID Driver {} is not supported by this version of Sunshine. Supported versions: {}. Restart Sunshine after updating. Click for instructions.",
+      displayed_version,
+      supported_versions
+    );
+    tray.notification_title = "Update Virtual HID Driver";
+    tray.notification_text = notification_text.c_str();
+    tray.notification_icon = tray.allIconPaths[4];
+    tray.notification_cb = []() {
+      launch_ui("/troubleshooting#virtualhid");
+    };
+
+    BOOST_LOG(warning) << notification_text;
+    if (tray_initialized_state().load()) {
+      tray_update(&tray);
+    }
+  }
+
+  void prepare_tray_virtualhid_driver() {
+    const auto status = confighttp::get_virtualhid_driver_status();
+    update_tray_virtualhid_driver(
+      status.value("installed", false),
+      status.value("version", std::string {}),
+      status.value("version_compatible", false),
+      status.value("supported_versions", std::string {})
+    );
   }
   #endif
 

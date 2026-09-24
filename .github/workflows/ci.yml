@@ -122,15 +122,17 @@ jobs:
       #      40M  third-party/build-deps/third-party/FFmpeg/Vulkan-Headers
       #      38M  third-party/build-deps/third-party/FFmpeg/SVT-AV1
       #
-      # Of build-deps' eight nested submodules, this build references exactly two:
+      # Of build-deps' nested submodules, this build references exactly one:
       #
-      #     cmake/compile_definitions/common.cmake:217  FFmpeg/nv-codec-headers/include
       #     cmake/compile_definitions/linux.cmake:131   FFmpeg/Vulkan-Headers/include
       #
+      # (nv-codec-headers used to be the second; since the 2026-09 Sunshine sync it is
+      # no longer a build-deps submodule and cmake/dependencies/nv_codec_headers.cmake
+      # takes it from the prepared FFmpeg bundle or fetches it with CPM.)
       # AMF, x264, x265_git, FFmpeg, SVT-AV1 and Vulkan-Loader are never referenced by
       # cmake/, CMakeLists.txt or src/. They are inputs for *producing* FFmpeg binaries
       # upstream; this job only needs headers. So build-deps is initialised
-      # non-recursively and then those two are added explicitly.
+      # non-recursively and then that one is added explicitly.
       #
       # (A first attempt skipped build-deps' submodules entirely, on the assumption that
       # the prebuilt `dist/` tree was used. That is true of the pin on `master`, but the
@@ -147,11 +149,14 @@ jobs:
           # shellcheck disable=SC2086
           git submodule update --init --recursive --jobs "$(nproc)" -- $others
           git submodule update --init --jobs "$(nproc)" -- third-party/build-deps
+          # nv-codec-headers is no longer a build-deps submodule: upstream's
+          # cmake/dependencies/nv_codec_headers.cmake takes it from the prepared
+          # FFmpeg bundle or fetches it with CPM. Vulkan-Headers is still vendored
+          # (cmake/compile_definitions/linux.cmake reads it from build-deps).
           git -C third-party/build-deps submodule update --init --jobs "$(nproc)" -- \
-              third-party/FFmpeg/nv-codec-headers third-party/FFmpeg/Vulkan-Headers
+              third-party/FFmpeg/Vulkan-Headers
           echo "initialised $(git submodule status --recursive | wc -l) submodules"
-          for d in third-party/build-deps/third-party/FFmpeg/nv-codec-headers/include \
-                   third-party/build-deps/third-party/FFmpeg/Vulkan-Headers/include; do
+          for d in third-party/build-deps/third-party/FFmpeg/Vulkan-Headers/include; do
             test -d "$d" || { echo "::error::missing required header dir: $d"; exit 1; }
           done
 
@@ -166,10 +171,11 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
 
-      # Sunshine pins `find_package(Boost CONFIG 1.89.0 EXACT)`. Arch ships a
-      # newer Boost, so CMake falls back to FetchContent and *builds Boost from
-      # source* — by far the slowest part of a cold build. Caching it is the
-      # single biggest speed win available here.
+      # `build/_deps` holds the prebuilt FFmpeg download and anything CPM fetches.
+      # (This used to be justified by Boost: Sunshine pinned
+      # `find_package(Boost CONFIG 1.89.0 EXACT)`, rejected Arch's newer Boost and
+      # built it from source. Upstream f54f9dfc made that a `1.89.0` *minimum*, so
+      # the container's system Boost is used and the fallback no longer runs.)
       - name: Cache CMake dependency builds
         uses: actions/cache@v6
         with:
@@ -193,7 +199,7 @@ jobs:
         # is the maintainer's real path and is NOT compiled here. It is covered
         # by the local build gate documented in CLAUDE.md, which builds with
         # -DBUILD_TESTS=ON and CUDACXX set.
-        # Docs are off: doxygen >= 1.10 is required by third-party/doxyconfig
+        # Docs are off: the docs toolchain (third-party/dockle since the 2026-09-24
         # and is not needed to verify the code.
         run: |
           cmake -B build -G Ninja \
@@ -214,6 +220,14 @@ jobs:
           # guessing. The cache restores (verified in the logs) but its
           # effectiveness across header changes was never measured.
           ccache --show-stats
+
+      # Upstream's web UI unit tests (vitest, tests/web/). Upstream ran them from
+      # ci-web.yml, which was deleted with the rest of LizardByte's orchestration in
+      # the 2026-09-24 sync -- but the job itself is plain npm, and it covers the SPA
+      # our meow options are declared in. node_modules is already installed by the
+      # `web-ui` CMake target during the build above.
+      - name: Web UI tests
+        run: npm test
 
       # These suites need real hardware or session services (a sound card, a
       # /dev/uinput-backed virtual HID, a working encoder). On a runner they do not

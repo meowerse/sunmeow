@@ -239,7 +239,7 @@ def main():
     app_svg = svg_doc(plated())
     print("application icon:")
     # sunshine.svg: hicolor app icon (cmake/packaging/linux.cmake), default tray icon
-    # (copied to images/logo-sunshine.svg by cmake/packaging/common.cmake), README, Doxygen.
+    # (emitted as images/logo-sunshine.svg by vite.config.js's emitTrayIconsPlugin), README, docs.
     write(os.path.join(ROOT, "sunshine.svg"), app_svg)
     save_png(render(app_svg, 256), os.path.join(ROOT, "sunshine.png"))  # CPACK_PACKAGE_ICON
     save_ico(app_svg, os.path.join(ROOT, "sunshine.ico"), bmp_upto=128)  # exe resource, WiX, CPack
@@ -247,7 +247,7 @@ def main():
     save_png(render(app_svg, 256), os.path.join(ROOT, "gh-pages-template", "assets", "img", "navbar-avatar.png"))
 
     print("web UI:")
-    save_ico(app_svg, os.path.join(WEB, "sunshine.ico"))  # favicon (template_header.html)
+    save_ico(app_svg, os.path.join(WEB, "sunshine.ico"))  # favicon (index.html)
     save_png(render(app_svg, 16), os.path.join(WEB, "logo-sunshine-16.png"))
     save_png(render(app_svg, 45), os.path.join(WEB, "logo-sunshine-45.png"))  # navbar logo
 

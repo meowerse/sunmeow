@@ -8,10 +8,10 @@ import DisplayDeviceOptions from "./audiovideo/DisplayDeviceOptions.vue";
 import DisplayModesSettings from "./audiovideo/DisplayModesSettings.vue";
 import Checkbox from "../../Checkbox.vue";
 
-const props = defineProps([
-  'platform',
-  'config',
-])
+const props = defineProps({
+  platform: String,
+  config: Object,
+})
 
 const config = ref(props.config)
 </script>
@@ -106,6 +106,3 @@ const config = ref(props.config)
 
   </div>
 </template>
-
-<style scoped>
-</style>

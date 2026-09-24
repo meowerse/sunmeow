@@ -210,12 +210,18 @@ git ls-tree HEAD third-party/moonlight-common-c
 Beware: a submodule's checked-out `origin` may be a leftover from an older base even when
 `.gitmodules` is correct. Trust `.gitmodules` at `HEAD`, not the remote in the working copy.
 
-#### Verified good state — 2026-08-24, base `a2b5da60`
+#### Verified good state — 2026-09-24, synced to Sunshine `c48e50e4`
 
 Of the 16 submodules, **13 point at the originating project and 3 point at LizardByte's own
 mirror org** (see caveats below). The protocol core is exactly at upstream HEAD:
-`third-party/moonlight-common-c` -> `moonlight-stream/moonlight-common-c`, pinned `874ac954`,
-which is `HEAD`/`refs/heads/master` on that remote as of 2026-08-18.
+`third-party/moonlight-common-c` -> `moonlight-stream/moonlight-common-c`, pinned `62e06638`,
+which is `HEAD`/`refs/heads/master` on that remote as of 2026-09-24 (`git ls-remote`). It
+arrived through upstream's own bump `019b1ba6` (`874ac95` -> `62e0663`, three RFI/IDR
+loss-handling fixes: `d85371c`, `be43885`, `62e0663`). This sync also replaced the
+`third-party/doxyconfig` submodule with `third-party/dockle` (upstream `3a8dcea0`).
+
+The previous verified state (2026-08-24, base `a2b5da60`) had the same pin at `874ac954`,
+then upstream HEAD as of 2026-08-18.
 
 Moving from the Apollo base to Sunshine advanced this submodule **39 commits** and moved it
 from `ClassicOldSong/moonlight-common-c` (a fork, pinned `c999436`, 2025-09-01) onto the

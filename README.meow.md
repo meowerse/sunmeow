@@ -251,6 +251,17 @@ Capture backend selection is the thing that actually goes wrong here.
 - **Set `upnp` off.** It is off by default and must stay off — automatic port forwarding
   punches a hole in the router and defeats a Tailscale-only deployment
   ([`CLAUDE.md` §7](./CLAUDE.md)).
+- **Tailscale and packet size.** The tailnet MTU is 1280, so a video packet must stay under
+  it or it fragments inside WireGuard. **Moonmeow on Android is already safe**: the Tailscale
+  app is an Android VPN, and `NvConnection.detectServerConnectionType()` treats any VPN as
+  remote and negotiates 1024-byte packets regardless of IPv4/IPv6. The gap is for *other*
+  Moonlight clients (e.g. moonlight-qt on a laptop) that decide in moonlight-common-c instead:
+  it caps remote **IPv4** at 1024 (100.64.0.0/10 is not treated as private, so tailnet IPv4
+  fits) but treats Tailscale's IPv6 prefix `fd7a:115c:a1e0::/48` (inside `fc00::/7`) as
+  **local** and sends no cap. If such a client reaches the host by an IPv6 tailnet address
+  (for example a MagicDNS AAAA record), set `packetsize = 1184` in `sunmeow.conf`; the host
+  caps a larger client request to it. Verified against `third-party/moonlight-common-c`
+  `62e06638` (`src/Connection.c`, `src/PlatformSockets.c`) and moonmeow `NvConnection.java`.
 - Web UI: `https://localhost:47990` (self-signed certificate on first run).
 
 > **KMS display-enumeration caveat.** An enumeration bug in `kmsgrab.cpp` blacked out both
