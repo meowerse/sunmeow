@@ -8,6 +8,12 @@
 // standard includes
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <string>
+
+// lib includes
+#include <boost/property_tree/json_parser.hpp>
+#include <boost/property_tree/ptree.hpp>
 
 // local includes
 #include "../certificate_test_utils.h"
@@ -77,6 +83,23 @@ protected:
     ASSERT_TRUE(out.is_open());
     out << R"({"root":{"uniqueid":")" << unique_id << R"(","named_devices":[{"name":"paired","cert":")"
         << escaped << R"(","uuid":"11111111-2222-3333-4444-555555555555","enabled":"true"}]}})";
+  }
+
+  /**
+   * @brief Read `root.uniqueid` back from the state file on disk.
+   */
+  std::string persisted_unique_id() const {
+    boost::property_tree::ptree tree;
+    boost::property_tree::read_json(state_file.string(), tree);
+    return tree.get<std::string>("root.uniqueid", "");
+  }
+
+  /**
+   * @brief Read the state file's raw bytes.
+   */
+  std::string state_file_bytes() const {
+    std::ifstream in {state_file, std::ios::binary};
+    return {std::istreambuf_iterator<char> {in}, std::istreambuf_iterator<char> {}};
   }
 
   fs::path state_file;  ///< Task-specific persisted state fixture.
@@ -154,4 +177,55 @@ TEST_F(UniqueIdRecoveryTest, EmptyUniqueIdRecoveryPreservesPairedClients) {
   EXPECT_FALSE(http::unique_id.empty()) << "identity was not recovered";
   EXPECT_TRUE(nvhttp::test_support::authorize_client_certificate(credentials.x509))
     << "paired client was dropped while recovering the uniqueid";
+}
+
+/**
+ * @brief A recovered uniqueid must be written back, so the host keeps one identity.
+ *
+ * @details Regression: the first version of this fix regenerated the id in memory only.
+ * `save_state()` runs only on pair/unpair/enable changes, so a host whose paired clients keep
+ * streaming never rewrote the file: it kept `""`, and every restart served a NEW uuid. Moonlight
+ * identifies a host by that uuid and rejects a poll that returns a different one, so the paired
+ * clients this fix protects would have lost the host on every restart instead.
+ */
+TEST_F(UniqueIdRecoveryTest, RecoveredUniqueIdIsPersistedAndStableAcrossReloads) {
+  const auto credentials = test_utils::certificates::generate_ca_credentials("Sunshine Paired Client");
+  write_state_with_client("", credentials.x509);
+  http::unique_id.clear();
+
+  nvhttp::test_support::reload_client_state();
+  const std::string recovered = http::unique_id;
+
+  ASSERT_FALSE(recovered.empty());
+  EXPECT_EQ(persisted_unique_id(), recovered) << "the recovered id was not written to the state file";
+
+  http::unique_id.clear();
+  nvhttp::test_support::reload_client_state();
+
+  EXPECT_EQ(http::unique_id, recovered) << "the host identity changed across a restart";
+  EXPECT_TRUE(nvhttp::test_support::authorize_client_certificate(credentials.x509))
+    << "persisting the recovered id dropped the paired client";
+}
+
+/**
+ * @brief An unreadable state file must still leave the host with a usable uniqueid.
+ *
+ * @details `read_json` failing used to return with `http::unique_id` still empty, so
+ * /serverinfo served `<uniqueid/>` -- the same unpairable state as an empty persisted id. The
+ * file itself must be left alone: it may be recoverable by hand, and overwriting it would
+ * destroy whatever pairings it still holds.
+ */
+TEST_F(UniqueIdRecoveryTest, UnreadableStateFileStillYieldsAUniqueIdAndIsNotOverwritten) {
+  {
+    std::ofstream out {state_file};
+    ASSERT_TRUE(out.is_open());
+    out << R"({"root":{"uniqueid":"B6FE1D89-0611-48CD-A751-15EFDB7437D8","named_devices":[)";  // truncated
+  }
+  const std::string before = state_file_bytes();
+  http::unique_id.clear();
+
+  nvhttp::test_support::reload_client_state();
+
+  EXPECT_FALSE(http::unique_id.empty());
+  EXPECT_EQ(state_file_bytes(), before) << "an unreadable state file was rewritten";
 }
