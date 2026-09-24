@@ -33,7 +33,10 @@ struct FileHandlerMakeDirectoryTest: BaseTest, testing::WithParamInterface<std::
 
 TEST_P(FileHandlerMakeDirectoryTest, Run) {
   auto [input, expected, remove] = GetParam();
-  const std::string test_dir = platf::appdata().string() + "/tests/path/";
+  // MEOW-TOUCH(test-sandbox): the build tree, not platf::appdata() -- on a real desktop that is
+  // the live ~/.config/sunmeow, and remove_all() below only removes tests/path/, so every run
+  // left a stray tests/ directory beside the paired-client list. Same fix as test_httpcommon.cpp.
+  const std::string test_dir = std::string {SUNSHINE_TEST_BIN_DIR} + "/tests/path/";
   input = test_dir + input;
 
   EXPECT_EQ(file_handler::make_directory(input), expected);

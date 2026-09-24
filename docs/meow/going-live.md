@@ -87,21 +87,27 @@ but every paired device has to re-pair with a PIN.
 > (`tests/unit/test_http_pairing.cpp`), while the new `tests/unit/test_nvhttp_client_auth.cpp`
 > redirects `config::nvhttp.file_state` into the build tree and restores it afterwards.
 >
-> **One real leak did survive, and is fixed here.** `tests/unit/test_httpcommon.cpp` built its
+> **Two real leaks did survive, and are fixed here.** `tests/unit/test_httpcommon.cpp` built its
 > download path from `platf::appdata()` — i.e. `~/.config/sunmeow` on a real desktop — and created
 > a stray `~/.config/sunmeow/tests/` directory on every run. It never touched
 > `sunmeow_state.json`, so no pairing was ever lost by it, but a test writing into the directory
 > that holds `apps.json`, `credentials` and the paired-client list is one edit away from doing
 > real damage. It now writes to `SUNSHINE_TEST_BIN_DIR`, the same build-tree location the auth
-> test already used.
+> test already used. `tests/unit/test_file_handler.cpp` did the same through
+> `platf::appdata()/tests/path/` (its cleanup removed only `path/`) and now writes there too.
 >
-> **So: running the test suite no longer touches your live configuration at all.** Verify that
-> claim yourself rather than trusting this paragraph — it is exactly the kind of statement that
-> rots:
+> **This is per-test hygiene, and it is not enough on its own.** The capture tests still resolve
+> the XDG portal restore token through `platf::appdata()`, so on a real desktop they read — and
+> can rewrite — `~/.config/sunmeow/portal_token`, and the live pairings were lost again on
+> 2026-09-14, after the measurement above. Do not rely on individual tests behaving: run the
+> suite against a throwaway config directory, which is what the gate does and what
+> `tests/meow/config_sandbox.cpp` (PR #18) makes the test binary do by itself.
 >
 > ```bash
 > md5sum ~/.config/sunmeow/sunmeow_state.json
-> ./build/tests/test_sunshine --gtest_filter='-EncoderVariants/EncoderTest*'
+> env -u CONFIGURATION_DIRECTORY -u SUNSHINE_MIGRATE_CONFIG \
+>   HOME=/var/tmp/sunmeow-testhome XDG_CONFIG_HOME=/var/tmp/sunmeow-testhome/.config \
+>   ./build/tests/test_sunshine --gtest_filter='-EncoderVariants/EncoderTest*'
 > md5sum ~/.config/sunmeow/sunmeow_state.json   # must be identical
 > ls ~/.config/sunmeow/tests 2>/dev/null && echo 'LEAK IS BACK'
 > ```
