@@ -123,15 +123,18 @@ build() {
 		-DSUNSHINE_ASSETS_DIR=share/sunshine \
 		-DSUNSHINE_ENABLE_CUDA=OFF \
 		-DCUDA_FAIL_ON_MISSING=OFF \
-		-DSUNSHINE_EXECUTABLE_PATH=/usr/bin/sunshine \
+		-DSUNSHINE_EXECUTABLE_PATH=/usr/bin/sunmeow \
 		-DSUNSHINE_PUBLISHER_NAME=LizardByte \
 		-DSUNSHINE_PUBLISHER_WEBSITE=https://app.lizardbyte.dev \
 		-DSUNSHINE_PUBLISHER_ISSUE_URL=https://app.lizardbyte.dev/support
 
-	appstreamcli validate --no-net "$_build_dir/dev.lizardbyte.app.Sunshine.metainfo.xml"
-	appstream-util validate "$_build_dir/dev.lizardbyte.app.Sunshine.metainfo.xml"
-	desktop-file-validate "$_build_dir/dev.lizardbyte.app.Sunshine.desktop"
-	desktop-file-validate "$_build_dir/dev.lizardbyte.app.Sunshine.terminal.desktop"
+	# MEOW-TOUCH(rebrand): these artifacts, and the binary and modules-load conf below, are
+	# named from PROJECT_FQDN / OUTPUT_NAME (meow.alxnko.sunmeow, sunmeow). The upstream names
+	# are never generated here, so validating them fails build() outright.
+	appstreamcli validate --no-net "$_build_dir/meow.alxnko.sunmeow.metainfo.xml"
+	appstream-util validate "$_build_dir/meow.alxnko.sunmeow.metainfo.xml"
+	desktop-file-validate "$_build_dir/meow.alxnko.sunmeow.desktop"
+	desktop-file-validate "$_build_dir/meow.alxnko.sunmeow.terminal.desktop"
 
 	cmake --build "$_build_dir"
 }
@@ -156,11 +159,11 @@ check() {
 		cp tests/test_results.xml "$_coverage_dir/tests/test_results.xml"
 	fi
 
-	./sunshine --version
+	./sunmeow --version
 }
 
 package() {
 	DESTDIR="$pkgdir" cmake --install "$_build_dir"
-	install -Dm644 "$builddir/src_assets/linux/misc/60-sunshine.conf" \
-		"$pkgdir/etc/modules-load.d/60-sunshine.conf"
+	install -Dm644 "$builddir/src_assets/linux/misc/60-sunmeow.conf" \
+		"$pkgdir/etc/modules-load.d/60-sunmeow.conf"
 }

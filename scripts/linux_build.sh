@@ -785,11 +785,13 @@ function run_step_validation() {
   echo "Running step: Validation"
 
   # Run appstream validation, etc.
-  appstreamcli validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-  appstream-util validate "build/dev.lizardbyte.app.Sunshine.metainfo.xml"
-  desktop-file-validate "build/dev.lizardbyte.app.Sunshine.desktop"
+  # MEOW-TOUCH(rebrand): named from PROJECT_FQDN (meow.alxnko.sunmeow); the upstream names
+  # are never generated, so validating them fails this step.
+  appstreamcli validate "build/meow.alxnko.sunmeow.metainfo.xml"
+  appstream-util validate "build/meow.alxnko.sunmeow.metainfo.xml"
+  desktop-file-validate "build/meow.alxnko.sunmeow.desktop"
   if [[ "$appimage_build" == 0 ]]; then
-    desktop-file-validate "build/dev.lizardbyte.app.Sunshine.terminal.desktop"
+    desktop-file-validate "build/meow.alxnko.sunmeow.terminal.desktop"
   fi
   return 0
 }

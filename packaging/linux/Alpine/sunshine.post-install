@@ -2,8 +2,10 @@
 
 set_sunshine_capabilities() {
 	if command -v setcap >/dev/null 2>&1; then
-		setcap cap_sys_admin,cap_sys_nice+p /usr/bin/sunshine || \
-			echo "Warning: unable to set capabilities on /usr/bin/sunshine" >&2
+		# MEOW-TOUCH(rebrand): grant capabilities to OUR binary. /usr/bin/sunshine belongs to the
+		# distro Sunshine package; setcap there would elevate another product and leave ours without.
+		setcap cap_sys_admin,cap_sys_nice+p /usr/bin/sunmeow || \
+			echo "Warning: unable to set capabilities on /usr/bin/sunmeow" >&2
 	fi
 }
 
