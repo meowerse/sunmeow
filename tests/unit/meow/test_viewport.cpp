@@ -1644,6 +1644,50 @@ TEST(MeowViewportSession, ARequestBeforeTheScalerIsHeldForIt) {
 }
 
 /**
+ * @brief A probe answered against stale geometry is answered again by the session's scaler.
+ *
+ * The regression: encoder probing at host start runs a scaler init, which leaves the state
+ * accepting with the *probe's* geometry. The first client's start-of-stream probe can arrive
+ * before that session's own scaler initialises (KWin capture setup and PipeWire negotiation
+ * take up to seconds), so it was evaluated against the stale geometry - and the real scaler's
+ * init then swallowed the pending echo. The client concluded it was talking to a stock host
+ * and left cursor following and receiver reports off for the whole session.
+ */
+TEST(MeowViewportSession, AProbeAgainstStaleGeometryIsAnsweredByTheSessionsScaler) {
+  meow::viewport::reset();
+  int startup_probe = 0;
+  meow::viewport::on_scaler_init(&startup_probe, 1920, 1200, surface_w, surface_h);
+  std::uint32_t last_sent = meow::viewport::current_echo_seq();
+
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 0, 0, surface_w, surface_h), true));
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+
+  const auto echo = encode_one_frame(&me, 5, last_sent);
+  ASSERT_TRUE(echo.has_value()) << "the client's capability probe must be answered";
+  EXPECT_EQ(echo->capture_width, desktop_w) << "against the real geometry, not the probe's";
+  EXPECT_EQ(echo->frame_index, 5u);
+
+  meow::viewport::reset();
+}
+
+/**
+ * @brief A new session never inherits the previous client's crop.
+ */
+TEST(MeowViewportSession, ANewSessionForgetsThePreviousClientsRequest) {
+  meow::viewport::reset();
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343), true));
+
+  meow::viewport::forget_request();  // What a new session's state does on construction.
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_FALSE(meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h)->cropped);
+
+  meow::viewport::reset();
+}
+
+/**
  * @brief The echo is sent after the first frame with the applied rectangle, and names it.
  *
  * It used to be sent from the control thread the moment the request arrived, before any
@@ -1857,15 +1901,15 @@ TEST(MeowViewportSession, RepeatingTheSameRequestIsIdempotent) {
 }
 
 /**
- * @brief When the host drops a crop by itself, the client is told - from the encode path.
+ * @brief An encoder reinit re-applies the client's crop, or revokes one nobody asked for.
  *
- * The client resets its local zoom to 1:1 on the strength of an echo. If the host then
- * revokes the crop on its own - an encoder reinit or a display mode change re-runs
- * `on_scaler_init()` - and says nothing, the client shows the whole desktop at 1:1 with no
- * way to know why. The revocation is echoed like any other change: after the first frame
- * without the crop, naming that frame.
+ * The client composes its view against the echoed rectangle. An encoder reinit or a display
+ * mode change re-runs `on_scaler_init()`; the session's last request is re-applied against
+ * the new scaler and echoed again, so the zoom survives. A crop with no request behind it is
+ * dropped, and that revocation is echoed like any other change - after the first frame without
+ * the crop, naming that frame - so the client never shows a full frame it believes is cropped.
  */
-TEST(MeowViewportSession, RevokingACropIsEchoedLikeAnyChange) {
+TEST(MeowViewportSession, AReinitReappliesTheCropOrRevokesItAndEchoesEither) {
   meow::viewport::reset();
   int me = 0;
   meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
@@ -1874,20 +1918,29 @@ TEST(MeowViewportSession, RevokingACropIsEchoedLikeAnyChange) {
   ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 640, 188, 640, 343), true));
   ASSERT_TRUE(encode_one_frame(&me, 1, last_sent).has_value());
 
-  // An encoder reinit drops the crop.
+  // An encoder reinit keeps the client's crop: it is re-applied against the new scaler and
+  // echoed again, naming the first frame the new scaler produced.
   meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
-  const auto revocation = encode_one_frame(&me, 2, last_sent);
+  const auto reapplied = encode_one_frame(&me, 2, last_sent);
+  ASSERT_TRUE(reapplied.has_value());
+  EXPECT_EQ(reapplied->applied, (rect_t {640, 188, 640, 343}));
+  EXPECT_EQ(reapplied->frame_index, 2u);
+  EXPECT_FALSE(encode_one_frame(&me, 3, last_sent).has_value()) << "once only";
+
+  // A crop with no request behind it (a new session's scaler inherits nothing) is revoked,
+  // and the revocation is echoed like any other change.
+  meow::viewport::forget_request();
+  meow::viewport::detail::requested.store(meow::viewport::detail::pack({1920, 180, 1920, 1080}));
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  const auto revocation = encode_one_frame(&me, 4, last_sent);
   ASSERT_TRUE(revocation.has_value());
   const auto ref = reference_frame(desktop_w, desktop_h, surface_w, surface_h);
   EXPECT_EQ(revocation->applied, (rect_t {ref.content_x, ref.content_y, ref.content_width, ref.content_height}));
-  EXPECT_EQ(revocation->frame_index, 2u);
+  EXPECT_EQ(revocation->frame_index, 4u);
 
-  // Once only.
-  EXPECT_FALSE(encode_one_frame(&me, 3, last_sent).has_value());
-
-  // A reinit with no crop in force has nothing to revoke.
+  // A reinit with no crop in force and no request has nothing to say.
   meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
-  EXPECT_FALSE(encode_one_frame(&me, 4, last_sent).has_value());
+  EXPECT_FALSE(encode_one_frame(&me, 5, last_sent).has_value());
 
   meow::viewport::reset();
 }

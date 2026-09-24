@@ -259,9 +259,11 @@ Three consequences worth knowing:
 > reach the encoder. `encode_run()` keeps a reference to the last captured image and converts
 > it again - once per new request, never in the steady state - so the crop and its echo
 > arrive even when nothing on screen moves (`MeowViewportSession.EncodeHookHonoursAPanOnAnIdleDesktop`).
-> The client's start-of-stream probe can arrive before the encoder has initialised; it is
-> parked and answered by the first scaler that publishes its geometry
-> (`ARequestBeforeTheScalerIsHeldForIt`).
+> The client's start-of-stream probe can arrive before the session's encoder has
+> initialised - before any scaler exists, or while the host's startup encoder probing has left
+> a stale one. The session's last request is therefore kept and re-evaluated by every scaler
+> init (`ARequestBeforeTheScalerIsHeldForIt`, `AProbeAgainstStaleGeometryIsAnsweredByTheSessionsScaler`),
+> which also carries a crop across an encoder reinit instead of dropping it.
 
 The echo is **load-bearing, not informational**. Without it a host that crops leaves the
 client showing the crop under its own local zoom — magnified twice, with absolute pointer
@@ -353,8 +355,10 @@ would be in.
 
 A stale crop cannot leak forward:
 
-- `on_scaler_init()` clears the pending rectangle, so a new session, a display mode change
-  or an encoder reinit all start uncropped;
+- a new session forgets the previous client's request when it is created
+  (`meow::control::session_state_t`), so it starts uncropped; within a session, a display
+  mode change or an encoder reinit re-applies the client's last request against the new
+  scaler and echoes it again, and a crop with no request behind it is revoked (and echoed);
 - `reset()` runs when the control broadcast ends;
 - the owning-scaler check means a scaler only ever acts on state it published itself;
 - with no rectangle pending, the owner's plan **is** the full-frame plan, so a scaler that

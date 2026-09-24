@@ -143,6 +143,15 @@ TEST_F(MeowControlStreamTest, RegistersEveryHandlerAndRefusesCollisions) {
   EXPECT_EQ(colliding_server.handlers.count(0x3003), 1u);
 }
 
+TEST_F(MeowControlStreamTest, ANewSessionForgetsThePreviousClientsViewport) {
+  int scaler = 0;
+  meow::viewport::on_scaler_init(&scaler, 5360, 1440, 1280, 720);
+  ASSERT_TRUE(meow::viewport::apply_request(std::string("\x01\x00\x80\x02\xBC\x00\x80\x02\x57\x01", 10), true));
+  ASSERT_NE(meow::viewport::detail::last_request.load(), 0u);
+  fake_session_t next;
+  EXPECT_EQ(meow::viewport::detail::last_request.load(), 0u) << "constructing a session forgets it";
+}
+
 TEST_F(MeowControlStreamTest, SubscribeCountsSubscribersAndSurvivesSessionEnd) {
   recording_server_t server;
   static const short table[] = {0x0305};

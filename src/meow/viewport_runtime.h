@@ -170,18 +170,22 @@ namespace meow::viewport {
     inline std::atomic<std::uint32_t> reconverted_generation {0};
 
     /**
-     * @brief A request that arrived before any scaler published its geometry, packed by `pack()`.
+     * @brief The current session's most recent request, in its reference-frame coordinates,
+     *        packed by `pack()`; 0 = none.
      *
-     * Held in the client's reference-frame coordinates and evaluated by the next
-     * `on_scaler_init()`, so the client's start-of-stream probe is answered even when it wins
-     * the race against encoder initialisation.
+     * Re-evaluated by every `on_scaler_init()`. That is what answers a start-of-stream probe
+     * that beat the session's own encoder initialisation - whether no scaler existed yet, or
+     * the host's startup encoder probing left a stale one that the probe was evaluated
+     * against - and what carries the client's crop across an encoder reinit instead of
+     * dropping it. Cleared when a new session starts (`forget_request()`) and by `reset()`, so
+     * one client's view can never be applied to another's stream.
      */
-    inline std::atomic<std::uint64_t> pending_request {0};
+    inline std::atomic<std::uint64_t> last_request {0};
 
     /**
-     * @brief Whether that pending request may crop (the feature gate at the time it arrived).
+     * @brief Whether `last_request` may crop (the feature gate at the time it arrived).
      */
-    inline std::atomic<bool> pending_allow_crop {false};
+    inline std::atomic<bool> last_allow_crop {false};
 
     /**
      * @brief Sequence number of the most recently published echo; 0 = none yet.
@@ -329,9 +333,10 @@ namespace meow::viewport {
     detail::owner.store(token, std::memory_order_release);
     detail::accepting.store(true, std::memory_order_release);
 
-    // ...except a request that raced ahead of us, or a crop we just dropped.
-    if (const auto early = detail::unpack(detail::pending_request.exchange(0, std::memory_order_acq_rel))) {
-      publish_request(*early, {capture_width, capture_height, surface_width, surface_height}, detail::pending_allow_crop.load(std::memory_order_relaxed));
+    // ...except the session's own request, evaluated against this geometry (it may have been
+    // answered against a stale one, or not at all), or a crop we just dropped.
+    if (const auto last = detail::unpack(detail::last_request.load(std::memory_order_acquire))) {
+      publish_request(*last, {capture_width, capture_height, surface_width, surface_height}, detail::last_allow_crop.load(std::memory_order_relaxed));
     } else if (revoked) {
       detail::generation.fetch_add(1, std::memory_order_release);
     }
@@ -352,8 +357,20 @@ namespace meow::viewport {
     // its last crop instead. `accepting` then stops any further request being answered, so
     // nothing can re-crop on the way out.
     detail::requested.store(0, std::memory_order_relaxed);
-    detail::pending_request.store(0, std::memory_order_relaxed);
+    detail::last_request.store(0, std::memory_order_relaxed);
     detail::accepting.store(false, std::memory_order_release);
+  }
+
+  /**
+   * @brief Forget the previous session's request; called when a streaming session is created.
+   *
+   * Without this, a scaler initialised for a new session would re-apply the *previous*
+   * client's crop to a client that never asked for one - possibly a stock client that cannot
+   * even tell. With several concurrent sessions (`channels > 1`, off by default) only the most
+   * recent client's view is followed, as before.
+   */
+  inline void forget_request() noexcept {
+    detail::last_request.store(0, std::memory_order_relaxed);
   }
 
   /**
@@ -381,16 +398,16 @@ namespace meow::viewport {
       // reading it as a request to stop cropping.
       return false;
     }
+    detail::last_allow_crop.store(allow_crop, std::memory_order_relaxed);
+    detail::last_request.store(detail::pack(*in_frame), std::memory_order_release);
 
     // Acquire on `accepting` first, then read `geometry`. `on_scaler_init()` writes the
     // geometry before releasing this flag, so the two are a matched pair.
     const auto packed_geometry = detail::accepting.load(std::memory_order_acquire) ? detail::geometry.load(std::memory_order_relaxed) : 0;
     const auto g = unpack_geometry(packed_geometry);
     if (g.capture_width <= 0 || g.capture_height <= 0 || g.surface_width <= 0 || g.surface_height <= 0) {
-      // No scaler yet: the start-of-stream probe can beat encoder initialisation. Park it for
-      // `on_scaler_init()` rather than dropping the client's only capability probe.
-      detail::pending_allow_crop.store(allow_crop, std::memory_order_relaxed);
-      detail::pending_request.store(detail::pack(*in_frame), std::memory_order_release);
+      // No scaler yet: the start-of-stream probe can beat encoder initialisation. It is kept in
+      // `last_request` for `on_scaler_init()` rather than dropped.
       return true;
     }
     publish_request(*in_frame, g, allow_crop);

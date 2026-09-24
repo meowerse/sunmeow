@@ -129,7 +129,12 @@ namespace meow::control {
    * Touched only on the control thread, except for construction and destruction.
    */
   struct session_state_t {
-    session_state_t() = default;
+    /**
+     * @brief A new session: forget the previous client's viewport request.
+     */
+    session_state_t() {
+      viewport::forget_request();
+    }
     session_state_t(const session_state_t &) = delete;
     session_state_t &operator=(const session_state_t &) = delete;
 
