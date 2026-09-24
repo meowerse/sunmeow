@@ -97,6 +97,7 @@
           {{ $t('index.installed_version_not_stable') }}
         </div>
 
+        <!-- MEOW-TOUCH(web-identity): `githubVersion &&` -- never claim "latest" when the check did not run -->
         <div v-else-if="githubVersion && (!preReleaseBuildAvailable || !notifyPreReleases) && !stableBuildAvailable && !buildVersionIsDirty">
           <div class="alert alert-success my-3">
             <check-circle :size="18" class="icon"></check-circle>

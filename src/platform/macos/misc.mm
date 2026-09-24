@@ -111,7 +111,9 @@ namespace platf {
     // MEOW-TOUCH(rebrand): our config dir, matching the Linux path in platform/linux/misc.cpp.
     // NOTE: no sunshine->sunmeow migration exists on ANY platform -- Linux deliberately does not
     // migrate either (misc.cpp), because that would copy the distro package's config. So a macOS
-    // user upgrading from an earlier sunmeow build re-pairs once. Same posture as Linux, stated
+    // user upgrading from an earlier sunmeow build starts from an EMPTY config directory: every
+    // client re-pairs, and apps.json, the web UI login (credentials) and sunmeow.conf must be
+    // recreated or copied over from ~/.config/sunshine by hand. Same posture as Linux, stated
     // here because it was previously stated nowhere for macOS.
     // Left at "sunshine" this fork would read and write the distro package's directory on a
     // machine that has both -- the exact collision the rebrand exists to prevent.
