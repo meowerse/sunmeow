@@ -101,7 +101,7 @@ but every paired device has to re-pair with a PIN.
 > can rewrite — `~/.config/sunmeow/portal_token`, and the live pairings were lost again on
 > 2026-09-14, after the measurement above. Do not rely on individual tests behaving: run the
 > suite against a throwaway config directory, which is what the gate does and what
-> `tests/meow/config_sandbox.cpp` (PR #18) makes the test binary do by itself.
+> `tests/meow/config_sandbox.cpp` makes the test binary do by itself.
 >
 > ```bash
 > md5sum ~/.config/sunmeow/sunmeow_state.json
