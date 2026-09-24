@@ -320,6 +320,7 @@ namespace cuda {
      * @return 0 on success; -1 when the blanking launch failed.
      */
     int meow_viewport_apply(platf::img_t &img) {
+      meow_viewport_upload = {};
       if (!meow_viewport_ready) {
         return 0;
       }
@@ -335,6 +336,7 @@ namespace cuda {
       // Clamp against the smaller of the texture we allocated and the frame in hand, so the
       // kernel cannot sample rows or columns that were never uploaded.
       const auto config = meow::viewport::cuda_scaler_config(planned, meow_viewport_baseline, std::min(width, img.width), std::min(height, img.height), frame->width, frame->height);
+      meow_viewport_upload = meow::viewport::cuda_upload_rect(config, std::min(width, img.width), std::min(height, img.height));
 
       // A crop always magnifies, so point sampling would alias even on a capture whose size
       // matches the encode surface and therefore needed no filtering uncropped.
@@ -348,6 +350,25 @@ namespace cuda {
         return sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], meow_viewport_blank.texture.point, stream.get(), {frame->width, frame->height, 0, 0});
       }
       return sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], meow_viewport_blank.texture.point, stream.get(), {frame->width, frame->height, 0, 0});
+    }
+
+    /**
+     * @brief MEOW-TOUCH(viewport-cuda): upload the captured frame, or only the part a crop reads.
+     *
+     * `meow_viewport_apply()` has just computed `meow_viewport_upload` from the configuration
+     * this frame will be converted with. An empty rectangle (no crop, cropping not armed)
+     * uploads the whole frame exactly as upstream's `load_ram()` does.
+     *
+     * @param img Captured frame in system memory.
+     * @param array Texture array the kernel samples.
+     * @return 0 on success.
+     */
+    int meow_viewport_load(platf::img_t &img, cudaArray_t array) {
+      const auto &r = meow_viewport_upload;
+      if (r.width <= 0 || r.height <= 0 || (r.width >= img.width && r.height >= img.height)) {
+        return sws.load_ram(img, array);
+      }
+      return sws.load_ram_region(img, array, r.x, r.y, r.width, r.height);
     }
 
     /**
@@ -417,6 +438,7 @@ namespace cuda {
     tex_t meow_viewport_blank;  ///< MEOW-TOUCH(viewport-cuda): 2x2 all-black texture used to clear the surface.
     bool meow_viewport_ready {};  ///< MEOW-TOUCH(viewport-cuda): whether cropping is armed for this scaler.
     bool meow_viewport_base_linear {};  ///< MEOW-TOUCH(viewport-cuda): `linear_interpolation` as upstream computed it.
+    meow::viewport::rect_t meow_viewport_upload {};  ///< MEOW-TOUCH(viewport-cuda): texels the next conversion reads; empty = all.
   };
 
   /**
@@ -437,9 +459,9 @@ namespace cuda {
         return -1;
       }
       if (is_yuv444) {
-        return sws.load_ram(img, tex.array) || sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(tex), stream.get());
+        return meow_viewport_load(img, tex.array) || sws.convert_yuv444(frame->data[0], frame->data[1], frame->data[2], frame->linesize[0], tex_obj(tex), stream.get());  // MEOW-TOUCH(viewport-cuda): was sws.load_ram
       }
-      return sws.load_ram(img, tex.array) || sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], tex_obj(tex), stream.get());
+      return meow_viewport_load(img, tex.array) || sws.convert_nv12(frame->data[0], frame->data[1], frame->linesize[0], frame->linesize[1], tex_obj(tex), stream.get());  // MEOW-TOUCH(viewport-cuda): was sws.load_ram
     }
 
     /**

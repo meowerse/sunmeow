@@ -330,9 +330,16 @@ All of it is pure and unit tested in `src/meow/viewport.h`:
    refused — a user pinching in hard should hit a limit, not lose their zoom.
 5. **Even-align.** Every cropped coordinate is even. NV12 chroma is subsampled 2x2; an odd
    origin fringes the crop edge and an odd destination offset fringes the letterbox seam.
-6. **Scale and place.** `scalar = min(surface_w / src_w, surface_h / src_h)`, centred — the
+6. **Fill the surface (since 2026-09-24).** A crop whose aspect ratio differs from the encode
+   surface is grown on its short side, centred and shifted back inside the desktop, to the
+   surface's aspect ratio (`fit_surface_aspect()`). Letterbox bars are encoded bits spent on
+   black; growing the crop spends them on real desktop around the view instead, which is the
+   context a small pan needs to be sharp immediately. The client's own guard band (it sends its
+   view expanded by a margin that depends on pan velocity) is honoured as sent; this only adds
+   what would otherwise be letterbox, and the echo reports the grown rectangle.
+7. **Scale and place.** `scalar = min(surface_w / src_w, surface_h / src_h)`, centred — the
    same arithmetic upstream applies to the full frame.
-7. **Refuse slivers.** If the scaled result would be under 32 px on an axis, the full desktop
+8. **Refuse slivers.** If the scaled result would be under 32 px on an axis, the full desktop
    is streamed instead. This is the "aspect ratio wildly different from the encode surface"
    guard: a 5360x64 request scales to 1280x15, which is valid and useless.
 
@@ -377,6 +384,15 @@ config and probed once — so it is recorded here rather than defended against w
 on the hot path.
 
 ## Cost per frame
+
+**The CUDA memory path uploads only what a crop reads (2026-09-24).** `cuda_ram_t` copies the
+captured frame to the GPU on every frame - 30.9 MB for the 5360x1440 desktop. With a crop
+active only the cropped span plus a two-texel sampling margin is copied
+(`meow::viewport::cuda_upload_rect()`, `sws_t::load_ram_region()`); the texels land at their own
+coordinates, so the kernels are unchanged and never sample the stale remainder. Measured with
+`tools/meow/cuda_upload_probe.cu` on the RTX 5050: full frame 3.0-4.6 ms, a 16:9 crop of one
+monitor 1.2-1.4 ms, a 2x phone zoom 0.6 ms per frame.
+
 
 In the steady state, one relaxed atomic load, roughly a dozen integer operations and six
 integer comparisons — measured at well under 1 us/call by

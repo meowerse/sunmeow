@@ -2274,3 +2274,97 @@ TEST(MeowViewportConfig, StatusLineNamesTheKeyWhenDisabled) {
 TEST(MeowViewportConfig, KeyIsNamespaced) {
   EXPECT_TRUE(meow::viewport::following_config_key.starts_with("meow_"));
 }
+
+// ---------------------------------------------------------------------------------
+// Aspect-ratio bias: fill the encode surface with real desktop, not letterbox.
+// ---------------------------------------------------------------------------------
+
+/**
+ * @brief A crop narrower than the surface grows sideways, centred, to the surface aspect.
+ *
+ * A portrait-ish view (the client's view plus its guard band) of a 16:9 surface would be
+ * letterboxed, spending encoded bits on black. Growing it instead costs nothing - the encode
+ * size and bitrate do not change - and gives the client context around what it shows.
+ */
+TEST(MeowViewportAspect, GrowsTheShortSideCentredToTheSurfaceAspect) {
+  const auto tall = meow::viewport::fit_surface_aspect({2000, 200, 800, 900}, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_EQ(tall.height, 900);
+  EXPECT_EQ(tall.width, 1600) << "900 * 16 / 9";
+  EXPECT_EQ(tall.x, 1600) << "centred on the original";
+  EXPECT_EQ(tall.y, 200);
+
+  const auto wide = meow::viewport::fit_surface_aspect({1000, 400, 1600, 450}, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_EQ(wide.width, 1600);
+  EXPECT_EQ(wide.height, 900);
+  EXPECT_EQ(wide.y, 174) << "centred, even-aligned";
+
+  const rect_t exact {1920, 180, 1920, 1080};
+  EXPECT_EQ(meow::viewport::fit_surface_aspect(exact, desktop_w, desktop_h, surface_w, surface_h), exact) << "already 16:9";
+}
+
+TEST(MeowViewportAspect, ShiftsInsideTheCaptureAtTheEdgesAndStopsWhereItEnds) {
+  const auto left = meow::viewport::fit_surface_aspect({0, 0, 400, 900}, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_EQ(left.x, 0);
+  EXPECT_EQ(left.width, 1600);
+  const auto right = meow::viewport::fit_surface_aspect({5200, 0, 160, 900}, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_EQ(right.x + right.width, desktop_w);
+  EXPECT_EQ(right.width, 1600);
+  // Too wide for the capture's height: grows as far as it can, the rest stays letterboxed.
+  const auto strip = meow::viewport::fit_surface_aspect({0, 600, desktop_w, 200}, desktop_w, desktop_h, surface_w, surface_h);
+  EXPECT_EQ(strip.y, 0);
+  EXPECT_EQ(strip.height, desktop_h);
+  EXPECT_EQ(strip.width, desktop_w);
+}
+
+TEST(MeowViewportAspect, NeverLeavesTheCaptureWhateverIsAsked) {
+  std::mt19937 rng {1234};
+  for (int i = 0; i < 20000; ++i) {
+    const int cw = 64 + static_cast<int>(rng() % 8000);
+    const int ch = 64 + static_cast<int>(rng() % 4000);
+    const int sw = 1 + static_cast<int>(rng() % 4000);
+    const int sh = 1 + static_cast<int>(rng() % 4000);
+    const auto requested = meow::viewport::fit_request(rect_t {static_cast<int>(rng() % 9000), static_cast<int>(rng() % 5000), 1 + static_cast<int>(rng() % 9000), 1 + static_cast<int>(rng() % 5000)}, cw, ch, sw, sh);
+    if (!requested) {
+      continue;
+    }
+    ASSERT_GE(requested->x, 0);
+    ASSERT_GE(requested->y, 0);
+    ASSERT_LE(requested->x + requested->width, cw);
+    ASSERT_LE(requested->y + requested->height, ch);
+    ASSERT_EQ(requested->x % 2, 0);
+    ASSERT_EQ(requested->y % 2, 0);
+    ASSERT_EQ(requested->width % 2, 0);
+    ASSERT_EQ(requested->height % 2, 0);
+  }
+}
+
+/**
+ * @brief The echo reports the grown rectangle, so the client composes against what it got.
+ *
+ * The client sends its view expanded by a velocity-dependent guard band; the host honours
+ * that rectangle as given and only adds what would otherwise be letterbox.
+ */
+TEST(MeowViewportAspect, TheEchoReportsTheGrownRectangle) {
+  meow::viewport::reset();
+  int me = 0;
+  meow::viewport::on_scaler_init(&me, desktop_w, desktop_h, surface_w, surface_h);
+  std::uint32_t last_sent = meow::viewport::current_echo_seq();
+
+  // A tall request in reference coordinates: 200x300 at (500, 250).
+  ASSERT_TRUE(meow::viewport::apply_request(make_payload(1, 0, 500, 250, 200, 300), true));
+  const auto echo = encode_one_frame(&me, 77, last_sent);
+  ASSERT_TRUE(echo.has_value());
+  EXPECT_EQ(echo->frame_index, 77u);
+  EXPECT_GT(echo->applied.width, 200) << "grown sideways";
+  const double aspect = static_cast<double>(echo->applied.width) / echo->applied.height;
+  EXPECT_NEAR(aspect, 16.0 / 9.0, 0.05);
+  // It still contains what was asked for.
+  EXPECT_LE(echo->applied.x, 500);
+  EXPECT_GE(echo->applied.x + echo->applied.width, 700);
+  const auto p = meow::viewport::plan_for_frame(&me, desktop_w, desktop_h, surface_w, surface_h);
+  ASSERT_TRUE(p->cropped);
+  EXPECT_GE(p->out_height, surface_h - 2);
+  EXPECT_GE(p->out_width, surface_w - 8) << "the surface is filled, not letterboxed";
+
+  meow::viewport::reset();
+}

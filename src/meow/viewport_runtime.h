@@ -291,7 +291,7 @@ namespace meow::viewport {
   inline void publish_request(const rect_t &in_frame, const geometry_t &g, const bool allow_crop) noexcept {
     std::uint64_t packed = 0;
     if (allow_crop) {
-      const auto requested = to_desktop(in_frame, g.capture_width, g.capture_height, g.surface_width, g.surface_height);
+      const auto requested = fit_request(to_desktop(in_frame, g.capture_width, g.capture_height, g.surface_width, g.surface_height), g.capture_width, g.capture_height, g.surface_width, g.surface_height);
       const auto applied = plan(g.capture_width, g.capture_height, g.surface_width, g.surface_height, requested);
       if (applied.cropped && requested) {
         packed = detail::pack(*requested);
