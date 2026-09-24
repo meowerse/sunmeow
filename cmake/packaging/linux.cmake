@@ -56,6 +56,12 @@ endif()
 # RPM specific
 set(CPACK_RPM_PACKAGE_LICENSE "GPLv3")
 
+# DEB specific
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+if(DEFINED ENV{DEBIAN_PACKAGE_RELEASE})  # cmake-lint: disable=W0106
+    set(CPACK_DEBIAN_PACKAGE_RELEASE "$ENV{DEBIAN_PACKAGE_RELEASE}")
+endif()
+
 # FreeBSD specific
 set(CPACK_FREEBSD_PACKAGE_MAINTAINER "${CPACK_PACKAGE_VENDOR}")
 set(CPACK_FREEBSD_PACKAGE_ORIGIN "misc/${CPACK_PACKAGE_NAME}")
@@ -163,7 +169,7 @@ if(${SUNSHINE_TRAY} STREQUAL 1)
     # Icons used by the Qt tray backend are no longer installed to the hicolor icon theme,
     # because Qt6 will not allow icons not part of the theme... so we will use icons from our web directory instead
 
-    if(TRAY_QT_VERSION EQUAL 6)
+    if(SUNSHINE_TRAY_QT_VERSION EQUAL 6)
         set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
                     ${CPACK_DEBIAN_PACKAGE_DEPENDS}, \
                     libqt6widgets6, \
@@ -178,7 +184,7 @@ if(${SUNSHINE_TRAY} STREQUAL 1)
                 devel/qt6-base
                 graphics/qt6-svg
         )
-    else()
+    elseif(SUNSHINE_TRAY_QT_VERSION EQUAL 5)
         set(CPACK_DEBIAN_PACKAGE_DEPENDS "\
                     ${CPACK_DEBIAN_PACKAGE_DEPENDS}, \
                     libqt5widgets5, \
@@ -193,6 +199,8 @@ if(${SUNSHINE_TRAY} STREQUAL 1)
                 x11-toolkits/qt5-widgets
                 graphics/qt5-svg
         )
+    else()
+        message(FATAL_ERROR "Unsupported tray Qt version: ${SUNSHINE_TRAY_QT_VERSION}")
     endif()
 endif()
 

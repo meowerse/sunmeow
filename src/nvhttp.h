@@ -7,7 +7,11 @@
 
 // standard includes
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -116,13 +120,22 @@ namespace nvhttp {
   };
 
   /**
+   * @brief Shared result used to return the completed pairing outcome to a PIN submitter.
+   */
+  struct pairing_completion_t {
+    std::condition_variable condition;  ///< Wakes the REST request when pairing finishes.
+    std::mutex mutex;  ///< Protects the completion result.
+    std::optional<bool> result;  ///< Final pairing result, or no value while the handshake is pending.
+  };
+
+  /**
    * @brief Pairing handshake state exchanged with a Moonlight client.
    */
   struct pair_session_t {
     struct {
-      std::string uniqueID = {};
-      std::string cert = {};
-      std::string name = {};
+      std::string uniqueID = {};  ///< Client-provided pairing-session identifier.
+      std::string cert = {};  ///< Client certificate bytes exchanged during pairing.
+      std::string name = {};  ///< Client name recorded after successful pairing.
     } client;  ///< Client object or client certificate data owned by this state..
 
     std::unique_ptr<crypto::aes_t> cipher_key = {};  ///< Cipher key.
@@ -130,13 +143,14 @@ namespace nvhttp {
 
     std::string serversecret = {};  ///< Server pairing secret.
     std::string serverchallenge = {};  ///< Server challenge sent during pairing.
+    std::shared_ptr<pairing_completion_t> completion = std::make_shared<pairing_completion_t>();  ///< Result shared with the REST request waiting for the handshake.
 
     struct {
       util::Either<
         std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response>,
         std::shared_ptr<typename SimpleWeb::ServerBase<SunshineHTTPS>::Response>>
-        response;
-      std::string salt = {};
+        response;  ///< Pending HTTP or HTTPS response completed after PIN approval.
+      std::string salt = {};  ///< Client-provided salt used to derive the pairing key.
       std::string id = {};  ///< Unguessable identifier used by the Web UI to approve this session.
       std::string device_name = {};  ///< Untrusted device name reported by the pairing client.
       std::string address = {};  ///< Network address from which the pairing request originated.
@@ -297,7 +311,8 @@ namespace nvhttp {
    * @param pairing_id Unguessable identifier of the pairing request to approve.
    * @param pin The user supplied pin.
    * @param name The user supplied name.
-   * @return `true` if the pin is correct, `false` otherwise.
+   * @return `true` if Moonlight proves the PIN by completing the handshake, `false` otherwise.
+   * @note The handshake wait uses the configured `ping_timeout` and never exceeds the pairing session deadline.
    * @examples
    * bool pin_status = nvhttp::pin("0123456789abcdef0123456789abcdef", "1234", "laptop");
    * @examples_end
@@ -353,6 +368,17 @@ namespace nvhttp {
    */
   namespace test_support {
     /**
+     * @brief Dispatch a plain-HTTP pairing request through the production handler.
+     *
+     * @param response HTTP response object to populate.
+     * @param request HTTP request data from the test client.
+     */
+    void pair_http(
+      std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Response> response,
+      std::shared_ptr<typename SimpleWeb::ServerBase<SimpleWeb::HTTP>::Request> request
+    );
+
+    /**
      * @brief Clear in-memory paired-client records without changing persisted state.
      */
     void reset_client_state();
@@ -368,12 +394,29 @@ namespace nvhttp {
     std::string add_client(const std::string &name, std::string cert, bool enabled);
 
     /**
+     * @brief Duplicate a paired-client record to simulate legacy conflicting state.
+     *
+     * @param uuid Persistent UUID of the record to duplicate.
+     * @return `true` when the source record was found and duplicated.
+     */
+    bool duplicate_client(std::string_view uuid);
+
+    /**
      * @brief Run the production certificate authorization checks against PEM input.
      *
      * @param cert PEM-encoded certificate presented by a client.
      * @return `true` when the exact certificate belongs to one enabled paired client.
      */
     bool authorize_client_certificate(std::string_view cert);
+
+    /**
+     * @brief Complete and remove a pairing session without running the protocol phases.
+     *
+     * @param pairing_id Operator approval identifier of the test session.
+     * @param success Pairing result delivered to the waiting PIN submitter.
+     * @return `true` when the session was found and completed.
+     */
+    bool complete_pairing(std::string_view pairing_id, bool success);
 
     /**
      * @brief Reload paired-client authorization state from the configured state file.

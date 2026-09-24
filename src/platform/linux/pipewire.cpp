@@ -225,6 +225,34 @@ namespace pipewire {
     }
 
     /**
+     * @brief Check and log whether the active session will require Sunshine to perform pacing.
+     *
+     * @param requested_framerate The framerate that we requested.
+     * @param requested_delay The delay corresponding to the requested framerate.
+     * @return True when Sunshine pacing is required.
+     */
+    bool is_pacing_required(AVRational requested_framerate, std::chrono::nanoseconds requested_delay) {
+      AVRational negotiated_rate =
+        {
+          static_cast<int32_t>(stream_data.format.info.raw.max_framerate.num),
+          static_cast<int32_t>(stream_data.format.info.raw.max_framerate.denom)
+      };
+      int rate_comparison = av_cmp_q(negotiated_rate, requested_framerate);
+      bool variable_rate = negotiated_rate.num == 0 && negotiated_rate.den == 1;
+      bool pacing_required = variable_rate || rate_comparison > 0;
+
+      if (!variable_rate && rate_comparison < 0) {
+        BOOST_LOG(warning)
+          << "[pipewire] Sunshine frame pacing: disabled (negotiated rate lower than requested rate)"sv;
+      } else {
+        BOOST_LOG(info) << "[pipewire] Sunshine frame pacing: "sv
+                        << (pacing_required ? std::format("enabled ({}ms)", std::chrono::duration<double, std::milli>(requested_delay).count()) : "disabled (event-driven capture)");
+      }
+
+      return pacing_required;
+    }
+
+    /**
      * @brief Set frame ready.
      *
      * @param ready Whether the PipeWire frame is ready for capture.
@@ -656,9 +684,10 @@ namespace pipewire {
       BOOST_LOG(info) << "[pipewire] Color primaries: "sv << d->format.info.raw.color_primaries;
       BOOST_LOG(info) << "[pipewire] Transfer function: "sv << d->format.info.raw.transfer_function;
       if (d->format.info.raw.max_framerate.num == 0 && d->format.info.raw.max_framerate.denom == 1) {
-        BOOST_LOG(info) << "[pipewire] Framerate (from compositor): 0/1 (variable rate capture)";
+        BOOST_LOG(info) << "[pipewire] Compositor negotiated frame rate: 0/1 (variable rate capture)"sv;
       } else {
-        BOOST_LOG(info) << "[pipewire] Framerate (from compositor): "sv << d->format.info.raw.framerate.num << "/"sv << d->format.info.raw.framerate.denom
+        BOOST_LOG(info) << "[pipewire] Compositor negotiated frame rate: "sv
+                        << d->format.info.raw.framerate.num << "/"sv << d->format.info.raw.framerate.denom
                         << ", max: "sv << d->format.info.raw.max_framerate.num << "/"sv << d->format.info.raw.max_framerate.denom;
       }
 
@@ -815,19 +844,24 @@ namespace pipewire {
       // calculate frame interval we should capture at
       delay = ::video::capture_frame_interval(config);
 
-      // WORKAROUND: if the active compositor is KWin, request variable rate (0, 1) capture only for versions 5.x-6.7.x.
-      // Ref: https://bugs.kde.org/show_bug.cgi?id=524129
+      // WORKAROUND: if the active compositor is KWin, request variable rate (0, 1) capture for versions 5.x-6.7.79 (6.7.80+ are 6.8 preview releases).
+      // Issue: KWin <=6.7 has a ~3% fixed-rate pacing deficit vs the requested framerate; variable rate avoids this and prioritizes gaming smoothness.
+      //        KWin 6.7 regresses variable rate (desktop animations run at half speed, but doesn't affect in-game pacing). Ref: https://bugs.kde.org/show_bug.cgi?id=524129
+      // Issue: KWin 6.8 still has desktop animation pacing issues with variable rate, but fixes the 3% fixed-rate pacing deficit. Fixed-rate pacing has
+      //        new regression tied to 'commit-timing'/VK_KHR_present_timing support when Vsync/FIFO is enabled. Ref: https://bugs.kde.org/show_bug.cgi?id=525619
+      // Summary: KWin 5.5-6.6 have excellent (variable) pacing. KWin 6.7 has poor desktop animation pacing (variable) but good game pacing.
+      //          KWin 6.8+ will have good overall (fixed) pacing if #525619 can be resolved, otherwise we will update docs advising to disable VSync in games.
       // Also negotiate variable rate for all other compositors. Mutter's variable rate pacing is superior.
       const static std::vector<int> kwin_version = get_running_kwin_version();
-      const static bool negotiate_variable_rate = kwin_version.empty() || (kwin_version[0] == 5 || (kwin_version[0] == 6 && kwin_version[1] < 8));
+      const static bool negotiate_variable_rate = kwin_version.empty() || (kwin_version[0] == 5 || (kwin_version[0] == 6 && (kwin_version[1] < 7 || (kwin_version[1] == 7 && kwin_version[2] < 80))));
 
       const AVRational fps = (negotiate_variable_rate ? AVRational {0, 1} : ::video::framerate_to_rational(config));
       if (fps.den != 1) {
-        BOOST_LOG(info) << "[pipewire] Requested frame rate [" << fps.num << "/" << fps.den << ", approx. " << av_q2d(fps) << " fps]";
+        BOOST_LOG(info) << "[pipewire] Requested frame rate: "sv << fps.num << "/"sv << fps.den << ", approx. "sv << av_q2d(fps) << " fps"sv;
       } else if (fps.num == 0 && fps.den == 1) {
-        BOOST_LOG(info) << "[pipewire] Requested variable rate capture [host pacing: " << std::chrono::duration<double, std::milli>(delay).count() << "ms]";
+        BOOST_LOG(info) << "[pipewire] Requested variable frame rate (Sunshine pacing required: "sv << std::chrono::duration<double, std::milli>(delay).count() << "ms)"sv;
       } else {
-        BOOST_LOG(info) << "[pipewire] Requested frame rate [" << fps.num << "fps]";
+        BOOST_LOG(info) << "[pipewire] Requested frame rate: "sv << fps.num << "fps"sv;
       }
       this->target_framerate = fps;
       mem_type = hwdevice_type;
@@ -983,6 +1017,9 @@ namespace pipewire {
       }
       sleep_overshoot_logger.reset();
 
+      // Check if pacing is required
+      bool pacing_required = pipewire.is_pacing_required(target_framerate, delay);
+
       while (true) {
         // Check if PipeWire signaled a dead stream
         if (shared_state->stream_dead.exchange(false)) {
@@ -995,16 +1032,9 @@ namespace pipewire {
           return platf::capture_e::reinit;
         }
 
-        // Advance to (or catch up with) next delay interval
-        auto now = std::chrono::steady_clock::now();
-        while (next_frame < now) {
-          next_frame += delay;
-        }
-
-        if (next_frame > now) {
-          std::this_thread::sleep_until(next_frame);
-          sleep_overshoot_logger.first_point(next_frame);
-          sleep_overshoot_logger.second_point_now_and_log();
+        // Use unpaced event driven capture when possible
+        if (pacing_required) {
+          platf::handle_pacing(next_frame, delay, sleep_overshoot_logger);
         }
 
         std::shared_ptr<platf::img_t> img_out;

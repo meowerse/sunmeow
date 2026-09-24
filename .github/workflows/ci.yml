@@ -166,10 +166,11 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat "$GITHUB_STEP_SUMMARY"
 
-      # Sunshine pins `find_package(Boost CONFIG 1.89.0 EXACT)`. Arch ships a
-      # newer Boost, so CMake falls back to FetchContent and *builds Boost from
-      # source* — by far the slowest part of a cold build. Caching it is the
-      # single biggest speed win available here.
+      # `build/_deps` holds the prebuilt FFmpeg download and anything CPM fetches.
+      # (This used to be justified by Boost: Sunshine pinned
+      # `find_package(Boost CONFIG 1.89.0 EXACT)`, rejected Arch's newer Boost and
+      # built it from source. Upstream f54f9dfc made that a `1.89.0` *minimum*, so
+      # the container's system Boost is used and the fallback no longer runs.)
       - name: Cache CMake dependency builds
         uses: actions/cache@v6
         with:

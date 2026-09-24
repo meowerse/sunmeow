@@ -1,11 +1,4 @@
-<!DOCTYPE html>
-<html lang="en" data-bs-theme="auto">
-
-<head>
-      <%- header %>
-</head>
-
-<body id="app" v-cloak>
+<template>
   <Navbar></Navbar>
   <div id="content" class="container">
     <h1 class="my-4">{{ $t('troubleshooting.troubleshooting') }}</h1>
@@ -18,11 +11,19 @@
           </div>
           <div>
             <h2 id="virtualhid" class="mb-1">{{ $t('troubleshooting.virtual_gamepad') }}</h2>
-            <p class="mb-0">{{ $t('troubleshooting.virtual_gamepad_desc') }}</p>
+            <p class="mb-0">{{ $t(virtualInputDescriptionKey) }}</p>
+            <RouterLink v-if="gamepadDriver === 'vigembus'"
+               class="btn btn-primary mt-3"
+               to="/config#gamepad_driver">
+              <gamepad-2 :size="18" class="icon"></gamepad-2>
+              {{ $t('troubleshooting.change_gamepad_driver') }}
+            </RouterLink>
           </div>
         </header>
 
-        <div class="virtual-gamepad-feature-grid" :aria-label="$t('troubleshooting.virtualhid_benefits_title')">
+        <div class="virtual-gamepad-feature-grid"
+             v-if="showVirtualhidBenefits"
+             :aria-label="$t('troubleshooting.virtualhid_benefits_title')">
           <article class="virtual-gamepad-feature">
             <div class="virtual-gamepad-feature-icon" aria-hidden="true">
               <gamepad-2 :size="21"></gamepad-2>
@@ -90,7 +91,7 @@
                 </tr>
               </thead>
               <tbody>
-                <tr>
+                <tr v-if="showVirtualhid">
                   <th scope="row">{{ $t('troubleshooting.virtualhid_driver') }}</th>
                   <td>{{ driverVersion(virtualhid) }}</td>
                   <td>
@@ -130,21 +131,10 @@
                   <th scope="row">{{ $t('troubleshooting.vigembus_driver') }}</th>
                   <td>{{ driverVersion(vigembus) }}</td>
                   <td>
-                    <div class="driver-release-state"
-                         :class="driverReleaseStateClass(vigembus, vigembusRelease)"
-                         :title="driverReleaseStatusText(vigembus, vigembusRelease)"
-                         aria-live="polite">
-                      <refresh-cw v-if="vigembusRelease.loading"
-                                  :size="17"
-                                  class="driver-release-spinning"></refresh-cw>
-                      <check-circle v-else-if="driverReleaseState(vigembus, vigembusRelease) === 'current'"
-                                    :size="17"></check-circle>
-                      <alert-triangle v-else-if="driverReleaseState(vigembus, vigembusRelease) === 'outdated'"
-                                      :size="17"></alert-triangle>
-                      <alert-circle v-else :size="17"></alert-circle>
-                      <span>{{ driverLatestVersion(vigembusRelease) }}</span>
+                    <div class="driver-release-state driver-release-neutral">
+                      <alert-circle :size="17"></alert-circle>
+                      <span>{{ $t('troubleshooting.driver_release_eol') }}</span>
                     </div>
-                    <small class="driver-release-detail">{{ driverReleaseStatusText(vigembus, vigembusRelease) }}</small>
                   </td>
                   <td>{{ vigembus.supported_versions }}</td>
                   <td>
@@ -154,7 +144,7 @@
                   </td>
                   <td class="driver-download-column">
                     <a class="btn btn-outline-primary driver-download-button"
-                       :href="vigembusRelease.url"
+                       href="https://github.com/nefarius/ViGEmBus/releases/latest"
                        target="_blank"
                        rel="noopener noreferrer">
                       <download :size="17"></download>
@@ -167,7 +157,7 @@
           </div>
         </section>
 
-        <section class="virtualhid-license-section" aria-labelledby="virtualhid-license">
+        <section class="virtualhid-license-section" aria-labelledby="virtualhid-license" v-if="showVirtualhid">
           <div class="virtualhid-license-heading">
             <div>
               <h3 id="virtualhid-license" class="h4 mb-1">{{ $t('troubleshooting.virtualhid_license') }}</h3>
@@ -232,11 +222,12 @@
                rel="noopener noreferrer">
               {{ $t('troubleshooting.virtualhid_license_buy') }}
             </a>
-            <button class="btn btn-outline-danger"
+            <button class="btn btn-danger"
                     type="button"
                     v-if="virtualhidLicense.licensed"
                     :disabled="licenseBusy || !virtualhidLicense.service_available"
                     @click="updateLicense('deactivate')">
+              <trash-2 :size="18" class="icon"></trash-2>
               {{ $t('troubleshooting.virtualhid_license_deactivate') }}
             </button>
           </div>
@@ -311,6 +302,27 @@
           <button class="btn btn-warning" :disabled="restartPressed" @click="restart">
             <refresh-cw :size="18" class="icon"></refresh-cw>
             {{ $t('troubleshooting.restart_sunshine') }}
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- Reset XDG Portal restore token -->
+    <div class="card my-4" v-if="platform === 'linux' || platform === 'freebsd'">
+      <div class="card-body">
+        <h2 id="portal_reset">{{ $t('troubleshooting.portal_reset') }}</h2>
+        <p>{{ $t('troubleshooting.portal_reset_desc') }}</p>
+        <div class="alert alert-success" v-if="portalResetStatus === true">
+          <check-circle :size="18" class="icon"></check-circle>
+          {{ $t('troubleshooting.portal_reset_success') }}
+        </div>
+        <div class="alert alert-danger" v-if="portalResetStatus === false">
+          <alert-circle :size="18" class="icon"></alert-circle>
+          {{ $t('troubleshooting.portal_reset_error') }}
+        </div>
+        <div>
+          <button class="btn btn-warning" :disabled="portalResetPressed" @click="resetPortalToken">
+            <rotate-ccw :size="18" class="icon"></rotate-ccw>
+            {{ $t('troubleshooting.portal_reset') }}
           </button>
         </div>
       </div>
@@ -391,10 +403,11 @@
         <div class="d-flex justify-content-between align-items-baseline py-2">
           <p>{{ $t('troubleshooting.logs_desc') }}</p>
           <div class="input-group" style="max-width: 300px">
+            <label for="log-filter" class="visually-hidden">{{ $t('troubleshooting.logs_find') }}</label>
             <span class="input-group-text">
               <search :size="18" class="icon"></search>
             </span>
-            <input type="text" class="form-control" v-model="logFilter" :placeholder="$t('troubleshooting.logs_find')" />
+            <input id="log-filter" type="text" class="form-control" v-model="logFilter" :placeholder="$t('troubleshooting.logs_find')" />
           </div>
         </div>
         <div>
@@ -426,9 +439,9 @@
     </div>
   </div>
 
-  <script type="module">
-    import { createApp } from 'vue'
-    import { initApp } from './init'
+</template>
+
+<script>
     import Navbar from './Navbar.vue'
     import { apiFetch } from './fetch_utils'
     import {
@@ -455,7 +468,7 @@
       XCircle,
     } from '@lucide/vue'
 
-    const app = createApp({
+    export default {
       components: {
         Navbar,
         AlertCircle,
@@ -494,11 +507,12 @@
           licenseBusy: false,
           licenseError: '',
           licenseKey: '',
+          portalResetPressed: false,
+          portalResetStatus: null,
           restartPressed: false,
           showApplyMessage: false,
           platform: "",
-          controllerEnabled: false,
-          virtualInputStatusLoaded: false,
+          gamepadDriver: '',
           unpairAllPressed: false,
           unpairAllStatus: null,
           virtualhid: {
@@ -535,17 +549,38 @@
             minimum_version: '',
             supported_versions: '',
           },
-          vigembusRelease: {
-            loading: false,
-            version: '',
-            url: 'https://github.com/nefarius/ViGEmBus/releases/latest',
-            error: false,
-          },
           currentLogIndex: -1,
           logLines: [],
         };
       },
       computed: {
+        showVirtualhid() {
+          return this.gamepadDriver !== 'vigembus';
+        },
+
+        showVigembus() {
+          return this.gamepadDriver !== 'virtualhid';
+        },
+
+        showVirtualhidBenefits() {
+          return !(this.virtualhid.installed && this.virtualhidLicense.licensed);
+        },
+
+        virtualInputDescriptionKey() {
+          if (!this.gamepadDriver) {
+            return 'troubleshooting.virtual_gamepad_unset_desc';
+          }
+          if (this.gamepadDriver === 'vigembus') {
+            return 'troubleshooting.virtual_gamepad_vigembus_desc';
+          }
+          if (this.virtualhid.installed && this.virtualhidLicense.licensed) {
+            return this.gamepadDriver === 'all' ?
+              'troubleshooting.virtual_gamepad_licensed_all_desc' :
+              'troubleshooting.virtual_gamepad_licensed_desc';
+          }
+          return 'troubleshooting.virtual_gamepad_desc';
+        },
+
         actualLogs() {
           if (!this.logFilter) return this.logs;
           const filterLower = this.logFilter.toLowerCase();
@@ -664,11 +699,7 @@
         },
 
         driverReleaseLoading() {
-          return this.virtualhidRelease.loading || (this.showVigembus && this.vigembusRelease.loading);
-        },
-
-        showVigembus() {
-          return this.controllerEnabled && this.virtualInputStatusLoaded && (!this.virtualhid.installed || this.vigembus.installed);
+          return this.showVirtualhid && this.virtualhidRelease.loading;
         }
       },
       created() {
@@ -677,11 +708,13 @@
           .then((r) => r.json())
           .then((r) => {
             this.platform = r.platform;
-            this.controllerEnabled = r.controller !== "disabled";
+            this.gamepadDriver = r.gamepad_driver || '';
             // The Virtual HID Driver also backs relative mouse input when gamepads are disabled.
             if (this.platform === 'windows') {
               this.refreshDriverInformation();
-              this.refreshLicenseStatus();
+              if (this.showVirtualhid) {
+                this.refreshLicenseStatus();
+              }
             }
           });
 
@@ -691,8 +724,9 @@
         this.refreshLogs();
         this.refreshClients();
       },
-      beforeDestroy() {
+      beforeUnmount() {
         clearInterval(this.logInterval);
+        if (this._logsCopyTimeout) clearTimeout(this._logsCopyTimeout);
       },
       methods: {
         refreshLogs() {
@@ -763,7 +797,6 @@
           fetch("./api/clients/list")
             .then((response) => response.json())
             .then((response) => {
-              const clientList = document.querySelector("#client-list");
               if (response.status === true && response.named_certs && response.named_certs.length) {
                 this.clients = response.named_certs.sort((a, b) => {
                   return (a.name.toLowerCase() > b.name.toLowerCase() || a.name === "" ? 1 : -1)
@@ -805,6 +838,35 @@
             }
           });
         },
+        resetPortalToken() {
+          this.portalResetPressed = true;
+          apiFetch("./api/reset-portal-token", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json"
+            }
+          })
+            .then((r) => r.json())
+            .then((r) => {
+              this.portalResetStatus = r.status;
+              if (r.status) {
+                apiFetch("./api/restart", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json"
+                  }
+                });
+              }
+              setTimeout(() => {
+                this.portalResetPressed = false;
+                this.portalResetStatus = null;
+              }, 5000);
+            })
+            .catch(() => {
+              this.portalResetPressed = false;
+              this.portalResetStatus = false;
+            });
+        },
         ddResetPersistence() {
           this.ddResetPressed = true;
           apiFetch("/api/reset-display-device-persistence", {
@@ -823,26 +885,23 @@
             });
         },
         /**
-         * @brief Refresh the installed driver details and latest stable GitHub releases.
+         * @brief Refresh the installed driver details and latest stable Virtual HID Driver release.
          */
         refreshDriverInformation() {
           this.refreshVirtualInputStatus();
           this.refreshDriverReleases();
         },
         /**
-         * @brief Refresh the latest stable release metadata for the Windows virtual input drivers.
+         * @brief Refresh the latest stable release metadata for Virtual HID Driver.
          */
         refreshDriverReleases() {
-          this.updateLatestRelease(
-            'virtualhidRelease',
-            'LizardByte/libvirtualhid',
-            'https://github.com/LizardByte/libvirtualhid/releases/latest',
-          );
-          this.updateLatestRelease(
-            'vigembusRelease',
-            'nefarius/ViGEmBus',
-            'https://github.com/nefarius/ViGEmBus/releases/latest',
-          );
+          if (this.showVirtualhid) {
+            this.updateLatestRelease(
+              'virtualhidRelease',
+              'LizardByte/libvirtualhid',
+              'https://github.com/LizardByte/libvirtualhid/releases/latest',
+            );
+          }
         },
         /**
          * @brief Fetch one repository's latest non-prerelease release from GitHub.
@@ -910,7 +969,6 @@
                 minimum_version: vigembus.minimum_version || '',
                 supported_versions: vigembus.supported_versions || '',
               };
-              this.virtualInputStatusLoaded = true;
             })
             .catch((err) => {
               console.error("Failed to fetch virtual input driver status:", err);
@@ -1173,9 +1231,5 @@
           }
         },
       },
-    });
-
-    initApp(app);
+    }
   </script>
-
-</body>

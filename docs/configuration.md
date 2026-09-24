@@ -1,6 +1,6 @@
 # Configuration
 
-@admonition{ Host authority | @htmlonly
+@admonition{ Host authority |:| @htmlonly
 By providing the host authority (URI + port), you can easily open each configuration option in the config UI.
 <br>
 <script src="configuration.js"></script>
@@ -33,6 +33,9 @@ location by modifying the configuration file.
 
 Although it is recommended to use the configuration UI, it is possible manually configure Sunshine by
 editing the `conf` file in a text editor. Use the examples as reference.
+
+The web UI groups these settings into the sidebar categories documented below. Encoder categories are shown only when
+supported on the current platform.
 
 ## General
 
@@ -310,6 +313,47 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### gamepad_driver
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Controls which virtual gamepad drivers Sunshine may use. The Web UI and startup notification continue to
+            request a choice while this option is not set. If Sunshine detects an active Virtual HID Driver license,
+            it automatically sets this option to `all` when it is missing.
+            @warning{ViGEmBus has limited gamepad features, supports only Xbox 360 and DualShock 4 emulation, and has
+            reached end of life. Selecting `vigembus` also suppresses Virtual HID Driver startup notifications.}
+            @note{This option applies only to Windows.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            not set
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            gamepad_driver = all
+            @endcode</td>
+    </tr>
+    <tr>
+        <td rowspan="3">Choices</td>
+        <td>all</td>
+        <td>Prefer Virtual HID Driver when it is available and licensed, with ViGEmBus as a limited fallback.</td>
+    </tr>
+    <tr>
+        <td>virtualhid</td>
+        <td>Use only Virtual HID Driver. An active paid license is required; ViGEmBus fallback is disabled.</td>
+    </tr>
+    <tr>
+        <td>vigembus</td>
+        <td>Use only ViGEmBus for gamepads and hide Virtual HID Driver status and licensing details.</td>
+    </tr>
+</table>
+
 ### gamepad
 
 <table>
@@ -318,6 +362,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td colspan="2">
             The type of gamepad to emulate on the host.
             @note{This option applies to FreeBSD, Linux, and Windows.}
+            @note{When gamepad_driver is `vigembus` on Windows, only auto, x360, and ds4 are available.}
         </td>
     </tr>
     <tr>
@@ -701,7 +746,6 @@ editing the `conf` file in a text editor. Use the examples as reference.
             for example.
             @tip{See [virtual key codes](https://docs.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes)}
             @hint{keybindings needs to have a multiple of two elements.}
-            @note{This option is not available in the UI. A PR would be welcome.}
         </td>
     </tr>
     <tr>
@@ -1654,8 +1698,9 @@ editing the `conf` file in a text editor. Use the examples as reference.
             and want to restrict Sunshine to a specific one. If not set, Sunshine will bind to all available
             interfaces (0.0.0.0 for IPv4 or :: for IPv6).
             <br><br>
-            <strong>Note:</strong> The address must be valid for the system and must match the address family
-            being used. When using IPv6, you can specify an IPv6 address even with address_family set to "both".
+            <strong>Note:</strong> The address must exist on the host and be compatible with address_family.
+            An IPv4 address works with either "ipv4" or "both"; when used with "both", Sunshine listens only
+            on that IPv4 address. An IPv6 address requires address_family to be set to "both".
         </td>
     </tr>
     <tr>
@@ -3548,16 +3593,3 @@ editing the `conf` file in a text editor. Use the examples as reference.
         <td>good for fast encoding and low-latency streaming</td>
     </tr>
 </table>
-
-<div class="section_buttons">
-
-| Previous          |                            Next |
-|:------------------|--------------------------------:|
-| [Legal](legal.md) | [App Examples](app_examples.md) |
-
-</div>
-
-<details style="display: none;">
-  <summary></summary>
-  [TOC]
-</details>
