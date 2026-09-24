@@ -339,6 +339,15 @@ Nothing gets pushed on a red gate. "It built" is not "it works" — for any chan
 capture, encoding, or input, also stream once and confirm the picture and the
 keyboard actually work.
 
+**The test binary never sees your real config.** `tests/meow/config_sandbox.cpp` points
+`XDG_CONFIG_HOME` at a fresh `mkdtemp` directory before static initialisation (suite runs
+destroyed live pairings twice before it existed). One consequence on a desktop session: with
+no `portal_token` in the sandbox, `EncoderVariants/EncoderTest.*` capture through the XDG
+portal and **block on its screencast consent dialog** until someone answers it — KWin capture
+only authorises the installed binary, and KMS needs `setcap`. Either answer the dialogs, or
+run `--gtest_filter=-EncoderVariants/EncoderTest.*` (CI excludes the same suite) and say so in
+the report. Never "fix" this by pointing the tests at the real config directory.
+
 ---
 
 ## 7. Security
