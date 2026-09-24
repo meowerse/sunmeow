@@ -2890,8 +2890,10 @@ p {
    resolves to) carried Sunshine's yellow/orange brand gradient; these re-declare
    ONLY the brand tokens with meowerse ones (packages/ui tokens.css): --mw-green
    #00ff82 / --mw-green-hover #00e676 / --mw-on-green #06331b, and the light-theme
-   accent #0a7a42. Semantic colours (success/warning/danger/info) and every named
-   theme (ember, nord, sunshine, ...) are deliberately untouched.
+   accent #0a7a42. Visibly that is the navbar; --color-accent* is re-declared for
+   consistency (today only --color-accent-light is read). Semantic colours
+   (success/warning/danger/info) and every named theme (ember, nord, sunshine, ...)
+   are deliberately untouched.
    Same selector specificity as the originals, so source order makes these win. */
 [data-theme="dark"] {
     --color-accent: #00ff82;
