@@ -302,6 +302,14 @@ test", and omitted `audio.cpp` from the list. `tests/unit/test_audio.cpp` covers
 cross-platform `src/audio.cpp`, not the Linux backend. Likewise
 `tests/unit/platform/test_common.cpp` and `test_virtualhid_input.cpp` are cross-platform.)
 
+Partial coverage added 2026-09-24, by extracting the logic rather than testing the glue:
+the metadata-cursor path in `pipewire.cpp`/`kwingrab.cpp` (SPA cursor parsing, the blend,
+restore, pointer-mode choice) is tested through `src/meow/cursor.h` and
+`src/meow/cursor_runtime.h` in `tests/unit/meow/test_cursor.cpp`, and the cropped upload in
+`cuda.cpp` through `meow::viewport::cuda_upload_rect()` in `test_viewport_cuda.cpp`. The
+PipeWire/Wayland/CUDA calls themselves remain untested without hardware; `tools/meow/*`
+holds the probes used to verify them on a real machine.
+
 `kmsgrab.cpp` is the path this project actually streams through on Wayland, and an
 untested display-enumeration bug in it blacked out both monitors during development.
 Upstream has since fixed that class of bug (`fix(linux/kms): use same methodology for
