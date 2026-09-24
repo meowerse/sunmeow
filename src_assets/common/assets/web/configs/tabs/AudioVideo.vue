@@ -93,6 +93,14 @@ const config = ref(props.config)
               default="false"
     ></Checkbox>
 
+    <!-- MEOW-TOUCH(cursor): report the host cursor so the client can follow it -->
+    <Checkbox class="mb-3"
+              id="meow_cursor_reporting"
+              locale-prefix="config"
+              v-model="config.meow_cursor_reporting"
+              default="true"
+    ></Checkbox>
+
     <DisplayDeviceOptions
       :platform="platform"
       :config="config"

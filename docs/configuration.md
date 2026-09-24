@@ -1151,6 +1151,34 @@ supported on the current platform.
     </tr>
 </table>
 
+### meow_cursor_reporting
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Send the host mouse position to clients that ask for it, so a zoomed-in client view can follow the cursor.
+            Positions are sent over the existing control stream, at most 60 times a second, and only to clients that
+            subscribed.
+            <br><br>
+            On KDE Plasma with KWin capture, when frames arrive through system memory (for example NVENC on a hybrid
+            laptop whose desktop runs on the integrated GPU), KWin is asked to send the cursor as metadata and sunmeow
+            draws it back into the stream itself. Where frames arrive as DMA-BUFs, or the negotiated pixel format cannot
+            be drawn into, the cursor stays drawn by the compositor and no position is sent.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}enabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            meow_cursor_reporting = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### dd_configuration_option
 
 <table>

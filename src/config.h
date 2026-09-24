@@ -138,6 +138,7 @@ namespace config {
     std::string adapter_name;  ///< Display adapter name selected in configuration.
     std::string output_name;  ///< Display output name selected in configuration.
     bool viewport_following;  ///< MEOW-TOUCH(viewport): honour client viewport crop requests. @see src/meow/viewport.h
+    bool cursor_reporting;  ///< MEOW-TOUCH(cursor): report the host cursor to subscribed clients. @see src/meow/cursor.h
 
     /**
      * @brief Display-device integration settings.
