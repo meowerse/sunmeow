@@ -270,9 +270,10 @@ namespace meow::adaptive_bitrate {
     loss_sample_t sample;
     sample.packets_sent = sent;
     sample.packets_lost = sent - received;
-    // The client only reports at all when it recovered a frame or dropped one; having every
-    // data packet means the report describes a successful recovery.
-    sample.frame_recovered = received_data >= total_data;
+    // The client only reports at all when data packets were missing, so `received_data >=
+    // total_data` is false for every report it ever sends. Reed-Solomon rebuilds a block from
+    // ANY `total_data` of its shards, data or parity, so that is the recovery condition.
+    sample.frame_recovered = received >= total_data;
     return sample;
   }
 

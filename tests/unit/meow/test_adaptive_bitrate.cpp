@@ -178,12 +178,28 @@ namespace {
   // ---------------------------------------------------------------------------
 
   TEST(AdaptiveBitrateParseTest, DecodesAWellFormedReport) {
-    // 80 data + 20 parity sent; 70 data + 20 parity received => 10 of 100 lost.
-    const auto sample = parse_frame_fec_status(make_report(80, 20, 70, 20));
+    // 80 data + 20 parity sent; 60 data + 10 parity received => 30 of 100 lost, and 70
+    // shards are fewer than the 80 Reed-Solomon needs, so the frame is gone.
+    const auto sample = parse_frame_fec_status(make_report(80, 20, 60, 10));
     ASSERT_TRUE(sample.has_value());
     EXPECT_EQ(sample->packets_sent, 100u);
-    EXPECT_EQ(sample->packets_lost, 10u);
+    EXPECT_EQ(sample->packets_lost, 30u);
     EXPECT_FALSE(sample->frame_recovered);
+  }
+
+  TEST(AdaptiveBitrateParseTest, MarksAnFecRecoveredFrameAsRecovered) {
+    // The regression this pins: the client only sends SS_FRAME_FEC_STATUS when data packets
+    // were missing, so `received_data >= total_data` was false for every report and every
+    // FEC recovery was counted as a lost frame. Reed-Solomon rebuilds the frame from ANY
+    // `total_data` shards, so 70 data + 20 parity >= 80 is a recovery.
+    const auto sample = parse_frame_fec_status(make_report(80, 20, 70, 20));
+    ASSERT_TRUE(sample.has_value());
+    EXPECT_EQ(sample->packets_lost, 10u);
+    EXPECT_TRUE(sample->frame_recovered);
+
+    // Exactly enough shards is still a recovery; one fewer is not.
+    EXPECT_TRUE(parse_frame_fec_status(make_report(80, 20, 60, 20))->frame_recovered);
+    EXPECT_FALSE(parse_frame_fec_status(make_report(80, 20, 59, 20))->frame_recovered);
   }
 
   TEST(AdaptiveBitrateParseTest, MarksAFullyReceivedFrameAsRecovered) {
