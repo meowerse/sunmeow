@@ -194,7 +194,7 @@ jobs:
         # is the maintainer's real path and is NOT compiled here. It is covered
         # by the local build gate documented in CLAUDE.md, which builds with
         # -DBUILD_TESTS=ON and CUDACXX set.
-        # Docs are off: doxygen >= 1.10 is required by third-party/doxyconfig
+        # Docs are off: the docs toolchain (third-party/dockle since the 2026-09-24
         # and is not needed to verify the code.
         run: |
           cmake -B build -G Ninja \
@@ -215,6 +215,14 @@ jobs:
           # guessing. The cache restores (verified in the logs) but its
           # effectiveness across header changes was never measured.
           ccache --show-stats
+
+      # Upstream's web UI unit tests (vitest, tests/web/). Upstream ran them from
+      # ci-web.yml, which was deleted with the rest of LizardByte's orchestration in
+      # the 2026-09-24 sync -- but the job itself is plain npm, and it covers the SPA
+      # our meow options are declared in. node_modules is already installed by the
+      # `web-ui` CMake target during the build above.
+      - name: Web UI tests
+        run: npm test
 
       # These suites need real hardware or session services (a sound card, a
       # /dev/uinput-backed virtual HID, a working encoder). On a runner they do not

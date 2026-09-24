@@ -489,7 +489,9 @@ fi
 %{_userunitdir}/*.service
 
 # Udev rules
-%{_udevrulesdir}/*-sunshine.rules
+# MEOW-TOUCH(rebrand): cmake/packaging/linux.cmake installs 60-sunmeow.rules; a glob that
+# matches nothing is a hard rpmbuild error in %files.
+%{_udevrulesdir}/*-sunmeow.rules
 
 # Modules-load configuration
 %{_modulesloaddir}/*-sunmeow.conf
