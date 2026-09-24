@@ -1529,38 +1529,51 @@ supported on the current platform.
     </tr>
 </table>
 
+### meow_adaptive_bitrate
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Adapt the encoder bitrate to the network path while streaming. Sunmeow watches the per-frame FEC reports
+            every Moonlight client sends, the round-trip time of the control connection, and - from Moonmeow - a
+            once-a-second receiver report with goodput, packet loss, round-trip time and decoder load.
+            <br><br>
+            It backs off when loss persists for two seconds (to 75%), and <em>before</em> loss when the round-trip time
+            keeps rising above its baseline (to 85%). When the link is saturated - losing packets with the round-trip
+            time up - it also caps the new bitrate at what actually arrived. When the link is clean it probes back up by
+            about 8% per second, at most 25% per change, staying just below the rate that last congested for 30 seconds.
+            The round-trip baseline is a minimum over the last 20 seconds and moves to a new path after a sustained step
+            with no loss, so a Tailscale switch between a direct and a relayed path never pins the stream low.
+            <br><br>
+            @note{Only NVENC and the libx264 software encoder apply a bitrate change to a running encoder (measured;
+            VA-API and libx265 ignore it). On any other encoder the bitrate stays at what the client negotiated and the
+            log says so once. On NVENC each change costs one keyframe, so changes are at least 3 seconds apart and at
+            least 200 Kbps.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}enabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            meow_adaptive_bitrate = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### adaptive_bitrate_min
 
 <table>
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The lowest bitrate (in Kbps) that adaptive bitrate may fall back to when the network is losing packets.
-            Setting this to a non-zero value is what turns adaptive bitrate on; it is off by default, so an existing
-            installation behaves exactly as before until you opt in.
-            <br><br>
-            When enabled, Sunshine watches the per-frame loss reports the client already sends and moves the encoder
-            bitrate inside <code>[adaptive_bitrate_min, effective ceiling]</code>. The effective ceiling is the
-            smallest of the bitrate Moonlight requested, [max_bitrate](#max_bitrate), and [adaptive_bitrate_max](#adaptive_bitrate_max) — adaptive
-            bitrate never raises a stream above what the client asked for.
-            <br><br>
-            If Moonlight requests <em>less</em> than this minimum, the client's request wins: the range collapses,
-            adaptive bitrate disables itself for that session and logs that it did so. The minimum can never be used
-            to push a stream above the client's request.
-            <br><br>
-            Values below 500 are clamped to 500 with a warning, and a minimum that is not below
-            [adaptive_bitrate_max](#adaptive_bitrate_max) disables the feature with a warning rather than being silently reinterpreted.
-            <br><br>
-            Sunshine measures the fraction of encoded frames the client reports as damaged, not the packet loss
-            inside those frames — the client only reports damaged frames, so the latter reads several percent for a
-            single lost packet and would back off on a perfectly ordinary link. It backs off when 15% or more of
-            frames are damaged for two seconds running, and climbs back when 2% or fewer are damaged for ten seconds
-            running with no unrecoverable frames. Between those two figures the bitrate holds still.
-            <br><br>
-            @note{Only NVENC applies a bitrate change to a running encoder. On any other encoder Sunshine logs that
-            adaptive bitrate is unavailable and leaves the bitrate fixed. Each change costs one keyframe, so changes
-            are deliberately rare: damage must persist for several seconds before Sunshine backs off, and the link
-            must stay clean for substantially longer before it climbs back.}
+            The lowest bitrate (in Kbps) that [meow_adaptive_bitrate](#meow_adaptive_bitrate) may fall back to. The
+            default of 0 means automatic: the larger of 1000 Kbps and a quarter of the bitrate the client negotiated.
+            Values below 500 are clamped to 500 with a warning. The minimum is never above the ceiling; if the client
+            negotiates less than it, there is nothing to adapt and the stream keeps its fixed bitrate.
         </td>
     </tr>
     <tr>
@@ -1583,12 +1596,11 @@ supported on the current platform.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The highest bitrate (in Kbps) that adaptive bitrate may climb to. A value of 0 means "use the effective
-            ceiling", i.e. the smaller of the bitrate Moonlight requested and [max_bitrate](#max_bitrate).
-            <br><br>
-            This has no effect on its own — without [adaptive_bitrate_min](#adaptive_bitrate_min) the feature stays off, and Sunshine
-            logs a warning saying so. It is also never able to raise a stream: the client's requested bitrate and
-            [max_bitrate](#max_bitrate) both still apply as hard limits.
+            The highest bitrate (in Kbps) that [meow_adaptive_bitrate](#meow_adaptive_bitrate) may climb to. The default
+            of 0 means automatic: the maximum bitrate Moonmeow reports its user allows, when that is above the bitrate it
+            negotiated (it negotiates a remembered starting rate), and otherwise the negotiated bitrate.
+            [max_bitrate](#max_bitrate) always still applies. A maximum that is not above
+            [adaptive_bitrate_min](#adaptive_bitrate_min) is ignored with a warning.
         </td>
     </tr>
     <tr>

@@ -1265,7 +1265,7 @@ namespace stream {
     // was previously dropped as an unknown type. Validation and all control logic live in
     // src/meow/, so this hook only forwards a validated sample to the encoder thread.
     server->map(meow::adaptive_bitrate::frame_fec_status_packet_type, [&](session_t *session, const std::string_view &payload) {
-      if (config::video.adaptive_bitrate_min <= 0) {
+      if (!config::video.adaptive_bitrate) {
         return;  // Feature off: do no per-packet work at all.
       }
       if (const auto sample = meow::adaptive_bitrate::parse_frame_fec_status(payload)) {

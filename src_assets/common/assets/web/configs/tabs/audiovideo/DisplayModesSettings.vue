@@ -1,5 +1,6 @@
 <script setup>
 import { ref } from 'vue'
+import Checkbox from '../../../Checkbox.vue'
 const props = defineProps({
   platform: String,
   config: Object,
@@ -14,6 +15,14 @@ const config = ref(props.config)
     <input type="number" class="form-control" id="max_bitrate" placeholder="0" v-model="config.max_bitrate" />
     <div class="form-text">{{ $t("config.max_bitrate_desc") }}</div>
   </div>
+
+  <!--meow_adaptive_bitrate-->
+  <Checkbox class="mb-3"
+            id="meow_adaptive_bitrate"
+            locale-prefix="config"
+            v-model="config.meow_adaptive_bitrate"
+            default="true"
+  ></Checkbox>
 
   <!--adaptive_bitrate_min-->
   <div class="mb-3">

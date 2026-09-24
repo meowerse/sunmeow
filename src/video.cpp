@@ -2457,12 +2457,12 @@ namespace video {
       }
     });
 
-    // MEOW-TOUCH(adaptive-bitrate): drive the live encoder bitrate from client loss reports.
+    // MEOW-TOUCH(adaptive-bitrate): drive the live encoder bitrate from client reports and RTT.
     // All policy lives in src/meow/; this only hands over the codec context to write to.
     // Declared after fail_guard so the guard, which may move `session` away on teardown,
     // destructs before the governor that borrows its codec context.
     auto *ab_avcodec = dynamic_cast<avcodec_encode_session_t *>(session.get());
-    meow::adaptive_bitrate::governor_t ab_governor {mail, ab_avcodec ? ab_avcodec->avcodec_ctx.get() : nullptr, ab_avcodec ? ab_avcodec->avcodec_ctx->codec->name : "", config.bitrate, config::video.max_bitrate, config::video.adaptive_bitrate_min, config::video.adaptive_bitrate_max};
+    meow::adaptive_bitrate::governor_t ab_governor {mail, ab_avcodec ? ab_avcodec->avcodec_ctx.get() : nullptr, ab_avcodec ? ab_avcodec->avcodec_ctx->codec->name : "", {config::video.adaptive_bitrate, config::video.adaptive_bitrate_min, config::video.adaptive_bitrate_max, config.bitrate, config::video.max_bitrate, config::stream.fec_percentage}};
 
     // set max frame time based on client-requested target framerate.
     double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target : (config.framerate / 2);

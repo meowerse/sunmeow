@@ -797,8 +797,9 @@ namespace config {
     },  // display_device
 
     0,  // max_bitrate
-    0,  // adaptive_bitrate_min (MEOW-TOUCH(adaptive-bitrate): 0 = adaptation off, today's behaviour)
-    0,  // adaptive_bitrate_max (MEOW-TOUCH(adaptive-bitrate): 0 = use the effective ceiling)
+    true,  // adaptive_bitrate (MEOW-TOUCH(adaptive-bitrate): on by default)
+    0,  // adaptive_bitrate_min (MEOW-TOUCH(adaptive-bitrate): 0 = automatic floor)
+    0,  // adaptive_bitrate_max (MEOW-TOUCH(adaptive-bitrate): 0 = automatic ceiling)
     0  // minimum_fps_target (0 = framerate)
   };
 
@@ -1726,6 +1727,7 @@ namespace config {
     }
 
     int_f(vars, "max_bitrate", video.max_bitrate);
+    bool_f(vars, "meow_adaptive_bitrate", video.adaptive_bitrate);  // MEOW-TOUCH(adaptive-bitrate)
     int_f(vars, "adaptive_bitrate_min", video.adaptive_bitrate_min);
     int_f(vars, "adaptive_bitrate_max", video.adaptive_bitrate_max);
     // MEOW-TOUCH(adaptive-bitrate): correct impossible bounds loudly instead of honouring them.
