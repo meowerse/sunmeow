@@ -19,12 +19,15 @@ namespace fs = std::filesystem;
  * @brief The suite must operate on a sandbox, never `~/.config/sunmeow`.
  *
  * @details Regression: tests reach the config directory via `platf::appdata()`. Without the
- * sandbox installed in tests_main.cpp that resolved to the real installation, and suite runs
- * twice wiped a live paired-client list and blanked its `uniqueid`, leaving the host
- * unpairable. This asserts the redirection is actually in effect, so the protection cannot
+ * sandbox installed by tests/meow/config_sandbox.cpp that resolved to the real installation,
+ * and suite runs twice wiped a live paired-client list and blanked its `uniqueid`, leaving the
+ * host unpairable. This asserts the redirection is actually in effect, so the protection cannot
  * silently regress.
  */
 TEST(ConfigDirIsolation, AppdataIsNotTheUsersLiveConfigDirectory) {
+#if defined(_WIN32) || defined(__APPLE__)
+  GTEST_SKIP() << "appdata() does not honour XDG_CONFIG_HOME on this platform, so the sandbox does not apply";
+#endif
   const char *home = std::getenv("HOME");
   ASSERT_NE(home, nullptr);
 
