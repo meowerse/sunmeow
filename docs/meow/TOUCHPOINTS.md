@@ -197,8 +197,9 @@ git diff --numstat origin-upstream/master -- .
 ```
 
 Run both **before every upstream sync** ([`CLAUDE.md` §4](../../CLAUDE.md)). The first grep
-now returns **9** marker families (`adaptive-bitrate`, `ccache-scope`, `clipboard`,
-`cmake-deps`, `rebrand`, `unified-desktop-capture`, `viewport`, `viewport-cuda`, `web-deps`)
+now returns **10** marker families (`adaptive-bitrate`, `ccache-scope`, `clipboard`,
+`cmake-deps`, `green-brand`, `rebrand`, `unified-desktop-capture`, `viewport`, `viewport-cuda`,
+`web-deps`; `green-brand` added 2026-09-24)
 across **49** distinct (file, marker) pairs in **43** files, as of 2026-09-03.
 
 **Do not hand-count this, and do not trust the number above without re-running it** — this
@@ -252,6 +253,12 @@ Insertion counts change with every edit to our own docs, so do not treat those a
 4	8	vite.config.js                     # the codecov removal -- see the row above
 2	3	package.json                       # dependency bumps + codecov dropped
 522	1251	package-lock.json                  # generated; regenerate, never hand-merge
+<n>	0	src_assets/common/assets/web/sunshine.css   # green-brand: appended block only
+1	27	sunshine.svg                                   # green-brand: GENERATED -- take upstream, re-run
+1	75	src_assets/common/assets/web/public/images/sunshine-locked.svg    # generated, as above
+1	84	src_assets/common/assets/web/public/images/sunshine-pausing.svg   # generated, as above
+1	89	src_assets/common/assets/web/public/images/sunshine-playing.svg   # generated, as above
+-	-	<every binary in the green-brand table>        # generated, as above
 <n>	0	CLAUDE.md
 <n>	0	README.meow.md
 <n>	0	docs/meow/TOUCHPOINTS.md
@@ -298,3 +305,56 @@ Linux/Wayland/KMS/NVENC commits it needed. Keep this file short.
 
 > Two agents must not edit the same upstream file in the same cycle. Coordinate through this
 > file before touching upstream code ([`CLAUDE.md` §8](../../CLAUDE.md)).
+
+---
+
+## `MEOW-TOUCH(green-brand)` — brand art replaced in place
+
+*Added 2026-09-24.* The application, tray, favicon and marketing art recoloured to meowerse
+green (`#00ff82` on the dark `#0d0d0d` plate, per meowerse
+`packages/ui/src/styles/tokens.css`), with Sunshine's swirl replaced by a geometric **sun**
+(owner decision: sunmeow keeps a sun, moonmeow a moon).
+
+**One master, everything generated.** `branding/meow/sunmeow.svg` is the only hand-authored
+artwork; `bash scripts/icons/meow/build.sh` regenerates every file below from it (needs
+`rsvg-convert` and Python Pillow; bytes are reproducible with librsvg 2.62 / Pillow 12.3).
+Never hand-edit a PNG/ICO/ICNS/JPG or a generated SVG — change the master and re-run.
+**On an upstream sync that touches any of these files, take upstream's side of the conflict,
+re-run the script, and commit the result**; there is nothing to merge by hand. Upstream's own
+`scripts/icons/convert_and_pack.sh` is left untouched (it needs `go-png2ico`, `oxipng` and
+Inkscape, none of which this generator requires).
+
+**Why layers 1–3 were insufficient (applies to every row):** `src/system_tray.cpp`,
+`src/confighttp.cpp`, `cmake/packaging/{common,linux,macos,windows}.cmake`,
+`cmake/compile_definitions/windows.cmake`, `Info.plist.in`, `Navbar.vue`,
+`template_header.html`, `docs/Doxyfile`, `tests/CMakeLists.txt` and `test_process.cpp`
+reference these **paths**. Replacing the bytes under the same name edits zero lines of
+upstream code; renaming would edit every one of those files. The generated SVGs carry an
+in-place `MEOW-TOUCH(green-brand)` comment so `git grep -n 'MEOW-TOUCH'` sees them; binary
+files cannot carry a marker, so this table is their declaration (as for the JSON rows above).
+
+| File | Marker | Why layers 1–3 were insufficient | Added |
+| --- | --- | --- | --- |
+| `sunshine.svg` | `MEOW-TOUCH(green-brand)` (generated) | see above. Plated app icon: the hicolor `scalable/apps/<FQDN>.svg` (the only hicolor size upstream installs — no PNG sizes exist to regenerate), default tray icon (copied to `images/logo-sunshine.svg`), README, Doxygen logo | 2026-09-24 |
+| `sunshine.png`, `sunshine.ico` | _(binary — this row)_ | see above. `CPACK_PACKAGE_ICON` (for NSIS that is the MUI header image, not the installer icon — an upstream quirk left as is), Windows exe resource via `windows.rc`, WiX product icon, Doxygen `PROJECT_ICON`. The `.ico` keeps upstream's frame layout: 16–128 px as 32-bit BMP, 256 px as PNG | 2026-09-24 |
+| `src_assets/macos/build/sunshine.icns` | _(binary — this row)_ | see above. Plate on Apple's 824/1024 grid; types ic07–ic14 (Pillow has no writer for the legacy 1x ic04/ic05, which macOS derives from ic11/ic12) | 2026-09-24 |
+| `src_assets/macos/build/sunshine-background-72dpi.jpg` | _(binary — this row)_ | see above. DMG window background: dark surface, quiet wordmark | 2026-09-24 |
+| `src_assets/common/assets/web/public/images/sunshine.ico`, `logo-sunshine-16.png`, `logo-sunshine-45.png` | _(binary — this row)_ | see above. Web UI favicon (all-PNG frames, as upstream's) and navbar logo | 2026-09-24 |
+| `src_assets/common/assets/web/public/images/sunshine-{playing,pausing,locked}.svg` | `MEOW-TOUCH(green-brand)` (generated) | see above. Tray states: plated sun + badge — playing = green `#00ff82` play, pausing = amber `#f5a524` bars, locked (pairing) = ink `#f2f2f2` padlock. Sunshine's `#00ff00`/`#00d9ff`/`#999999` badges moved onto the meowerse palette; the three stay distinct by colour **and** shape | 2026-09-24 |
+| `src_assets/common/assets/web/public/images/sunshine-{playing,pausing,locked}.{png,ico}`, `…-16.png`, `…-45.png` | _(binary — this row)_ | see above. Raster copies of the tray states | 2026-09-24 |
+| `branding/ms-store/box-art.png`, `poster-art.png`, `branding/github/banner.jpg`, `gh-pages-template/assets/img/navbar-avatar.png` | _(binary — this row)_ | see above. Store / marketing art | 2026-09-24 |
+| `src_assets/common/assets/web/sunshine.css` | `MEOW-TOUCH(green-brand)` | Theme values are plain CSS custom properties in an upstream stylesheet that every page links; there is no hook to inject a second stylesheet without editing each HTML entry point. So: **one appended block, `0` deletions**, re-declaring the brand tokens of the default `dark` and `light` themes (what `auto` resolves to), which carried Sunshine's yellow gradient. Visibly this is the navbar (`--navbar-bg`, `--navbar-text*`); `--color-accent*` is re-declared for consistency, though today only `--color-accent-light` is read (one placeholder gradient). Semantic colours and every named theme are untouched. Same specificity, later in source order, so the seam is only ever the end of the file | 2026-09-24 |
+
+Tray on KDE Plasma: the StatusNotifierItem shows these SVGs in full colour at 22 px, so the
+dark plate is what keeps the sun legible on a light panel (`#00ff82` alone is 1.3:1 on
+white). Checked at 16 and 22 px on Breeze light and dark in the PR's contact sheet.
+
+**Known gap, not addressed here:** there is no monochrome / template tray variant. macOS
+prefers template images in the menu bar; upstream also ships a full-colour tray there, and a
+template icon would need a code change in the tray backend, so it is left for a separate task.
+
+`logo-libvirtualhid.svg` (referenced by `src/system_tray.cpp`) is **not** missing on Linux:
+it is the Windows-only Virtual HID driver notification icon, copied from the
+`third-party/libvirtualhid` submodule by `cmake/packaging/common.cmake` and
+`tests/CMakeLists.txt` under `if(WIN32)`, and only listed in `allIconPaths` under
+`#ifdef _WIN32`. Third-party driver art, left as is.
