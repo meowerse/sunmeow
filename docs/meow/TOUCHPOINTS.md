@@ -296,3 +296,47 @@ Linux/Wayland/KMS/NVENC commits it needed. Keep this file short.
 
 > Two agents must not edit the same upstream file in the same cycle. Coordinate through this
 > file before touching upstream code ([`CLAUDE.md` §8](../../CLAUDE.md)).
+
+---
+
+## `MEOW-TOUCH(green-brand)` — brand art replaced in place
+
+*Added 2026-09-24.* The application, tray, favicon and marketing art recoloured to meowerse
+green (`#00ff82` on the dark `#0d0d0d` plate, per meowerse
+`packages/ui/src/styles/tokens.css`), with Sunshine's swirl replaced by a geometric **sun**
+(owner decision: sunmeow keeps a sun, moonmeow a moon).
+
+**One master, everything generated.** `branding/meow/sunmeow.svg` is the only hand-authored
+artwork; `bash scripts/icons/meow/build.sh` regenerates every file below from it (needs
+`rsvg-convert` and Python Pillow). Never hand-edit a PNG/ICO/ICNS/JPG or a generated SVG —
+change the master and re-run. **On an upstream sync that touches any of these files, take
+upstream's side of the binary conflict, re-run the script, and commit the result**; there is
+nothing to merge by hand. Upstream's own `scripts/icons/convert_and_pack.sh` is left untouched
+(it needs `go-png2ico`, `oxipng` and Inkscape, none of which this generator requires).
+
+Why layers 1–3 do not apply: `src/system_tray.cpp`, `src/confighttp.cpp`,
+`cmake/packaging/{common,linux,macos,windows}.cmake`, `cmake/compile_definitions/windows.cmake`,
+`Info.plist.in`, `Navbar.vue`, `template_header.html`, `docs/Doxyfile`, `tests/CMakeLists.txt`
+and `test_process.cpp` all reference these **paths**. Replacing the bytes under the same name
+edits zero lines of upstream code; renaming would edit every one of those files.
+
+| File(s) | Marker | Generated as |
+| --- | --- | --- |
+| `sunshine.svg` | _(generated SVG — this row)_ | plated app icon; hicolor icon, default tray icon (copied to `images/logo-sunshine.svg`), README, Doxygen logo |
+| `sunshine.png`, `sunshine.ico` | _(binary — this row)_ | CPack icon; Windows exe resource / NSIS / WiX icon (16–256 px) |
+| `src_assets/macos/build/sunshine.icns` | _(binary — this row)_ | macOS bundle icon, plate on Apple's 824/1024 grid |
+| `src_assets/macos/build/sunshine-background-72dpi.jpg` | _(binary — this row)_ | DMG window background: dark surface, quiet wordmark |
+| `src_assets/common/assets/web/public/images/sunshine.ico`, `logo-sunshine-16.png`, `logo-sunshine-45.png` | _(binary — this row)_ | web UI favicon and navbar logo |
+| `src_assets/common/assets/web/public/images/sunshine-{playing,pausing,locked}.{svg,png,ico}`, `…-16.png`, `…-45.png` | _(generated — this row)_ | tray states: plated sun + badge — playing = green `#00ff82` ▶, pausing = amber `#f5a524` ❚❚, locked (pairing) = ink `#f2f2f2` padlock. Sunshine's `#00ff00`/`#00d9ff`/`#999999` badges, moved onto the meowerse palette; the three stay distinct by colour **and** shape |
+| `branding/ms-store/box-art.png`, `poster-art.png`, `branding/github/banner.jpg`, `gh-pages-template/assets/img/navbar-avatar.png` | _(binary — this row)_ | store / marketing art |
+| `src_assets/common/assets/web/sunshine.css` | `MEOW-TOUCH(green-brand)` | **appended block only, `0` deletions**: re-declares the brand tokens (`--navbar-bg`/`--navbar-text*`, `--color-accent*`) of the default `dark` and `light` themes, which carried Sunshine's yellow gradient. Semantic colours and every named theme are untouched. Appending (same specificity, later in source order) keeps the merge seam at the end of the file |
+
+Tray on KDE Plasma: the StatusNotifierItem shows these SVGs in full colour at 22 px, so the
+dark plate is what keeps the sun legible on a light panel (`#00ff82` alone is 1.3:1 on
+white). Checked at 16 and 22 px on Breeze light and dark in the PR's contact sheet.
+
+`logo-libvirtualhid.svg` (referenced by `src/system_tray.cpp`) is **not** missing on Linux:
+it is the Windows-only Virtual HID driver notification icon, copied from the
+`third-party/libvirtualhid` submodule by `cmake/packaging/common.cmake` and
+`tests/CMakeLists.txt` under `if(WIN32)`, and only listed in `allIconPaths` under
+`#ifdef _WIN32`. Third-party driver art, left as is.

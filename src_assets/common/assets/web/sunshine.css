@@ -2881,3 +2881,34 @@ p {
         bottom: var(--spacing-sm);
     }
 }
+
+/* ==========================================================================
+   MEOW-TOUCH(green-brand): meowerse brand colours for the two default themes
+   ==========================================================================
+   Appended, never edited in place, so an upstream sync can only ever meet this
+   block at the end of the file. The default "dark" and "light" themes (what "auto"
+   resolves to) carried Sunshine's yellow/orange brand gradient; these re-declare
+   ONLY the brand tokens with meowerse ones (packages/ui tokens.css): --mw-green
+   #00ff82 / --mw-green-hover #00e676 / --mw-on-green #06331b, and the light-theme
+   accent #0a7a42. Semantic colours (success/warning/danger/info) and every named
+   theme (ember, nord, sunshine, ...) are deliberately untouched.
+   Same selector specificity as the originals, so source order makes these win. */
+[data-theme="dark"] {
+    --color-accent: #00ff82;
+    --color-accent-hover: #00e676;
+    --color-accent-light: #06331b;
+
+    --navbar-bg: linear-gradient(135deg, #00ff82 0%, #00e676 100%);
+    --navbar-text: #06331b;
+    --navbar-text-muted: #0a5a32;
+}
+
+[data-theme="light"] {
+    --color-accent: #0a7a42;
+    --color-accent-hover: #086638;
+    --color-accent-light: #d3f5e3;
+
+    --navbar-bg: linear-gradient(135deg, #00ff82 0%, #00e676 100%);
+    --navbar-text: #06331b;
+    --navbar-text-muted: #0a5a32;
+}
