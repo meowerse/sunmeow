@@ -67,7 +67,12 @@ function removeCmd(index) {
     <!-- Sunshine Name -->
     <div class="mb-3">
       <label for="sunshine_name" class="form-label">{{ $t('config.sunshine_name') }}</label>
-      <input type="text" class="form-control" id="sunshine_name" placeholder="Sunshine"
+      <!-- MEOW-TOUCH(web-identity): the option key stays `sunshine_name` (renaming it would
+           break every existing config and the consistency test); only the shown name changes.
+           NB this placeholder was already inaccurate upstream -- the real default is the
+           machine hostname (config.cpp: platf::get_host_name()), not the product name. Kept
+           upstream's static-placeholder shape rather than redesigning the field. -->
+      <input type="text" class="form-control" id="sunshine_name" placeholder="Sunmeow"
              v-model="config.sunshine_name" />
       <div class="form-text">{{ $t('config.sunshine_name_desc') }}</div>
     </div>

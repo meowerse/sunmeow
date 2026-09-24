@@ -2,8 +2,10 @@
   <div>
     <nav class="navbar navbar-expand-lg navbar-sunshine">
       <div class="container-fluid">
-        <a class="navbar-brand" href="./" title="Sunshine">
-          <img src="/images/logo-sunshine-45.png" height="45" alt="Sunshine">
+        <!-- MEOW-TOUCH(web-identity): brand tooltip and image alt. The alt is what a screen
+             reader announces, so it is product identity, not decoration. -->
+        <a class="navbar-brand" href="./" title="Sunmeow">
+          <img src="/images/logo-sunshine-45.png" height="45" alt="Sunmeow">
         </a>
         <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent"
                 aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">

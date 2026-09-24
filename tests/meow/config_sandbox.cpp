@@ -16,11 +16,13 @@
  * hold those initializers; the priority is link-wide, so this can live in its own file rather
  * than in upstream's `tests_main.cpp`.
  *
- * Linux and FreeBSD only: that is where `appdata()` honours `XDG_CONFIG_HOME`. Windows resolves
- * the config directory from the executable's location and macOS from `$HOME/.config`, so the
- * redirection would have no effect there; `ConfigDirIsolation` skips on those platforms.
+ * Linux and FreeBSD resolve `appdata()` through `XDG_CONFIG_HOME`. macOS ignores XDG and uses
+ * `$HOME/.config/sunmeow`, so there `HOME` is pointed at the sandbox as well. Windows resolves
+ * the config directory from the executable's location, never from the user's profile, so it is
+ * excluded and `ConfigDirIsolation` skips there. The original `HOME` is kept in
+ * `SUNMEOW_TESTS_REAL_HOME` so the guard test can compare against the real location.
  */
-#if !defined(_WIN32) && !defined(__APPLE__)
+#if !defined(_WIN32)
 
   // standard includes
   #include <cerrno>
@@ -61,6 +63,10 @@ namespace {
     ::unsetenv("CONFIGURATION_DIRECTORY");
     ::unsetenv("SUNSHINE_MIGRATE_CONFIG");
 
+    if (const char *home = ::getenv("HOME"); home != nullptr && ::getenv("SUNMEOW_TESTS_REAL_HOME") == nullptr) {
+      ::setenv("SUNMEOW_TESTS_REAL_HOME", home, 0);
+    }
+
     const char *tmp = ::getenv("TMPDIR");
     if (tmp == nullptr || tmp[0] == '\0') {
       tmp = "/tmp";
@@ -77,6 +83,13 @@ namespace {
       std::fprintf(stderr, "FATAL: could not set XDG_CONFIG_HOME to %s\n", sandbox_root);
       std::_Exit(1);
     }
+  #ifdef __APPLE__
+    // macOS appdata() is $HOME/.config/sunmeow and never reads XDG.
+    if (::setenv("HOME", sandbox_root, 1) != 0) {
+      std::fprintf(stderr, "FATAL: could not set HOME to %s\n", sandbox_root);
+      std::_Exit(1);
+    }
+  #endif
   }
 
   /**
