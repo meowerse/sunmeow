@@ -145,6 +145,21 @@ namespace meow::viewport {
   inline constexpr std::size_t echo_payload_length = 14;
 
   /**
+   * @brief Echo flag bit: a `uint32 frame_index` follows at offset 14 (echo v2).
+   *
+   * The host video frame number - the one the client sees in `DECODE_UNIT.frameNumber` - of
+   * the first frame encoded with the applied rectangle. Only well-formed together with
+   * `flag_desktop_extent`, because it sits at a fixed offset behind that field; a client
+   * rejects bit1 without bit0 as malformed.
+   */
+  inline constexpr std::uint8_t flag_frame_index = 0x02;
+
+  /**
+   * @brief Size of the v2 echo payload: the v1 echo plus `uint32 frame_index`.
+   */
+  inline constexpr std::size_t echo_v2_payload_length = 18;
+
+  /**
    * @brief Smallest crop we will scale from, on either axis, in captured pixels.
    *
    * Guards against a client asking for a 1x1 rectangle and driving swscale into an
@@ -303,6 +318,81 @@ namespace meow::viewport {
       return std::nullopt;
     }
     return r;
+  }
+
+  /**
+   * @brief Grow a crop to the encode surface's aspect ratio, centred, inside the capture.
+   *
+   * A crop whose aspect ratio differs from the encode surface is letterboxed into it, and the
+   * letterbox is encoded bits spent on black. Growing the short side instead fills the surface
+   * with real desktop around the region asked for - for free, since the encode size and bitrate
+   * do not change - which is exactly the context a client needs for a small pan to be sharp
+   * immediately. The client's own guard band (it sends its view expanded by a margin that
+   * depends on pan velocity) is honoured as given; this only adds what would otherwise be
+   * letterbox. The echo reports the grown rectangle, and the client composes against that.
+   *
+   * The growth is centred and shifted back inside the capture at its edges. If the capture
+   * itself is too small in that direction, the crop grows as far as it can and the rest stays
+   * letterboxed. The result is even-aligned like every other cropped rectangle.
+   *
+   * @param source Sanitized crop in captured pixels.
+   * @param capture_width Width of the captured frame.
+   * @param capture_height Height of the captured frame.
+   * @param surface_width Width of the encode surface.
+   * @param surface_height Height of the encode surface.
+   * @return The grown crop.
+   */
+  [[nodiscard]] inline rect_t fit_surface_aspect(const rect_t &source, const int capture_width, const int capture_height, const int surface_width, const int surface_height) noexcept {
+    if (source.width <= 0 || source.height <= 0 || surface_width <= 0 || surface_height <= 0) {
+      return source;
+    }
+    rect_t r = source;
+    // Compare w/h against sw/sh without division: w * sh vs h * sw, in 64 bits.
+    const auto lhs = static_cast<std::int64_t>(r.width) * surface_height;
+    const auto rhs = static_cast<std::int64_t>(r.height) * surface_width;
+    if (lhs < rhs) {
+      // Too narrow: grow the width.
+      const auto want = static_cast<int>(std::min<std::int64_t>((rhs + surface_height - 1) / surface_height, capture_width));
+      r.x -= (want - r.width) / 2;
+      r.width = want;
+      r.x = std::clamp(r.x, 0, capture_width - r.width);
+    } else if (lhs > rhs) {
+      // Too wide: grow the height.
+      const auto want = static_cast<int>(std::min<std::int64_t>((lhs + surface_width - 1) / surface_width, capture_height));
+      r.y -= (want - r.height) / 2;
+      r.height = want;
+      r.y = std::clamp(r.y, 0, capture_height - r.height);
+    }
+    r.x = floor_even(r.x);
+    r.y = floor_even(r.y);
+    r.width = floor_even(std::min(r.width, capture_width - r.x));
+    r.height = floor_even(std::min(r.height, capture_height - r.y));
+    return r;
+  }
+
+  /**
+   * @brief Sanitize a mapped request and grow it to the surface aspect ratio.
+   *
+   * Applied once, where a request is accepted, so the rectangle published to the encode thread
+   * is already the one the echo will report; `plan()` itself stays the pure clamp-and-letterbox
+   * it always was, and `plan_for_frame()`'s tightening against a short frame still bounds it.
+   *
+   * @param requested Request in captured pixels (from `to_desktop()`), if any.
+   * @param capture_width Width of the captured frame.
+   * @param capture_height Height of the captured frame.
+   * @param surface_width Width of the encode surface.
+   * @param surface_height Height of the encode surface.
+   * @return The rectangle to publish, or `std::nullopt` when nothing usable remains.
+   */
+  [[nodiscard]] inline std::optional<rect_t> fit_request(const std::optional<rect_t> &requested, const int capture_width, const int capture_height, const int surface_width, const int surface_height) noexcept {
+    if (!requested) {
+      return std::nullopt;
+    }
+    const auto source = sanitize(*requested, capture_width, capture_height);
+    if (!source) {
+      return std::nullopt;
+    }
+    return fit_surface_aspect(*source, capture_width, capture_height, surface_width, surface_height);
   }
 
   /**
@@ -616,6 +706,27 @@ namespace meow::viewport {
   }
 
   /**
+   * @brief Serialize the v2 echo: the v1 echo plus the frame it first applies to.
+   *
+   * Sets both `flag_desktop_extent` and `flag_frame_index`: the frame index sits at a fixed
+   * offset behind the desktop extent, so bit1 without bit0 would be malformed.
+   *
+   * @param applied_in_reference Applied rectangle, in reference-frame pixels.
+   * @param capture_width Width of the captured desktop in pixels.
+   * @param capture_height Height of the captured desktop in pixels.
+   * @param frame_index First frame encoded with the applied rectangle.
+   * @param out Destination buffer, at least `echo_v2_payload_length` bytes.
+   */
+  inline void write_echo_v2_payload(const rect_t &applied_in_reference, const int capture_width, const int capture_height, const std::uint32_t frame_index, std::uint8_t *const out) noexcept {
+    write_echo_payload(applied_in_reference, capture_width, capture_height, out);
+    out[1] = flag_desktop_extent | flag_frame_index;
+    out[14] = static_cast<std::uint8_t>(frame_index & 0xFF);
+    out[15] = static_cast<std::uint8_t>((frame_index >> 8) & 0xFF);
+    out[16] = static_cast<std::uint8_t>((frame_index >> 16) & 0xFF);
+    out[17] = static_cast<std::uint8_t>((frame_index >> 24) & 0xFF);
+  }
+
+  /**
    * @brief What to do about a viewport packet that just arrived.
    */
   struct request_outcome_t {
@@ -676,7 +787,7 @@ namespace meow::viewport {
       return {};
     }
 
-    const auto requested = to_desktop(*in_frame, capture_width, capture_height, surface_width, surface_height);
+    const auto requested = fit_request(to_desktop(*in_frame, capture_width, capture_height, surface_width, surface_height), capture_width, capture_height, surface_width, surface_height);
     const auto applied = plan(capture_width, capture_height, surface_width, surface_height, requested);
     if (applied.source.width <= 0 || applied.source.height <= 0) {
       // Degenerate capture or surface size; there is nothing truthful to report.
@@ -736,11 +847,11 @@ namespace meow::viewport {
     if (enabled) {
       return std::string(
         "meow viewport following: enabled. The client may request a crop of the desktop; "
-        "the software and CUDA scaling paths honour it, VA-API does not, and absolute pointer "
-        "coordinates are not remapped."
+        "the software and CUDA scaling paths honour it, VA-API does not. Absolute pointer "
+        "input is not remapped: the client sends it in uncropped stream coordinates."
       );
     }
-    return std::string("meow viewport following: disabled. Set '").append(following_config_key).append(" = enabled' in sunmeow.conf to allow the client to crop the streamed desktop.");
+    return std::string("meow viewport following: disabled. Viewport requests are answered with the full desktop; set '").append(following_config_key).append(" = enabled' in sunmeow.conf to allow the client to crop the streamed desktop.");
   }
 
 }  // namespace meow::viewport

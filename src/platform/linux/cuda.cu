@@ -428,4 +428,13 @@ namespace cuda {
     return CU_CHECK_IGNORE(cudaMemcpy2DToArray(array, 0, 0, img.data, img.row_pitch, img.width * img.pixel_pitch, img.height, cudaMemcpyHostToDevice), "Couldn't copy to cuda array");
   }
 
+  // MEOW-TOUCH(viewport-cuda): the same copy, restricted to the rectangle a crop samples. The
+  // texels land at their own coordinates, so the kernel's source map is unchanged; the rest of
+  // the array keeps stale pixels that no launch reads. The rectangle comes from
+  // meow::viewport::cuda_upload_rect(), which keeps it inside the frame.
+  int sws_t::load_ram_region(platf::img_t &img, cudaArray_t array, int x, int y, int width, int height) {
+    const auto *src = img.data + (std::ptrdiff_t) y * img.row_pitch + (std::ptrdiff_t) x * img.pixel_pitch;
+    return CU_CHECK_IGNORE(cudaMemcpy2DToArray(array, (size_t) x * img.pixel_pitch, y, src, img.row_pitch, (size_t) width * img.pixel_pitch, height, cudaMemcpyHostToDevice), "Couldn't copy to cuda array");
+  }
+
 }  // namespace cuda

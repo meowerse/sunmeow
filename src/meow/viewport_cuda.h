@@ -88,6 +88,7 @@
 
 // standard includes
 #include <algorithm>
+#include <cmath>
 #include <optional>
 
 // local includes
@@ -171,6 +172,46 @@ namespace meow::viewport {
       return origin;
     }
     return origin + static_cast<float>(dest_extent - 1) * step;
+  }
+
+  /**
+   * @brief Texels a cropped kernel can sample either side of its source span.
+   *
+   * Bilinear sampling at `x` reads `floor(x - 0.5)` and the texel after it, and the NV12
+   * kernel's 2x2 block reads one step further; two texels of margin cover both.
+   */
+  inline constexpr int cuda_upload_margin = 2;
+
+  /**
+   * @brief The part of the captured frame a CUDA scaler configuration can read.
+   *
+   * The memory-buffer path (`cuda_ram_t`) uploads the captured frame to the GPU on every
+   * frame - all 5360x1440x4 bytes of it on the reference desktop. With a crop active the
+   * kernel reads only the cropped span, so only that span (plus the sampling margin) needs to
+   * be uploaded; the rest of the texture holds stale pixels no kernel launch will sample.
+   *
+   * Uncropped configurations return the whole frame, so the upload is exactly upstream's.
+   *
+   * @param config Configuration from `cuda_scaler_config()`.
+   * @param capture_width Width of the frame in hand (at most the allocated texture's).
+   * @param capture_height Height of the frame in hand.
+   * @return The rectangle to upload, in captured texels, always inside the frame.
+   */
+  [[nodiscard]] inline rect_t cuda_upload_rect(const cuda_scaler_t &config, const int capture_width, const int capture_height) noexcept {
+    const rect_t full {0, 0, std::max(capture_width, 0), std::max(capture_height, 0)};
+    if (!config.cropped || capture_width <= 0 || capture_height <= 0) {
+      return full;
+    }
+    const auto x0 = static_cast<int>(std::floor(config.source.originX)) - cuda_upload_margin;
+    const auto y0 = static_cast<int>(std::floor(config.source.originY)) - cuda_upload_margin;
+    const auto x1 = static_cast<int>(std::ceil(cuda_max_sample(config.source.originX, config.source.stepX, config.dest.width) + config.source.stepX)) + cuda_upload_margin;
+    const auto y1 = static_cast<int>(std::ceil(cuda_max_sample(config.source.originY, config.source.stepY, config.dest.height) + config.source.stepY)) + cuda_upload_margin;
+    rect_t r;
+    r.x = std::clamp(x0, 0, capture_width - 1);
+    r.y = std::clamp(y0, 0, capture_height - 1);
+    r.width = std::clamp(x1, r.x + 1, capture_width) - r.x;
+    r.height = std::clamp(y1, r.y + 1, capture_height) - r.y;
+    return r;
   }
 
   /**

@@ -157,32 +157,32 @@ the same config directory. If you want them to coexist, give the fork its own co
 
 ---
 
-## 4. Turning the two features on
+## 4. The features, and turning them off
 
-Both ship **off**. That is not timidity: each changes what the client sees, and a host that
-silently started cropping would be a worse bug than one that does nothing.
-
-Set these in the web UI (they are in the **Audio/Video** tab) or directly in
-`~/.config/sunmeow/sunmeow.conf`:
+Since 2026-09-24 every meow feature is **on by default** (owner decision D1), for fresh
+installs and for existing ones whose `sunmeow.conf` does not mention the key. Each has an
+explicit off switch, in the web UI (**Audio/Video** tab) or in `~/.config/sunmeow/sunmeow.conf`:
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `meow_viewport_following` | off | Host crops the capture to the rectangle the client is actually displaying. |
-| `adaptive_bitrate_min` | `0` (off) | Floor, in kbps. **Setting this is what enables adaptation at all.** |
-| `adaptive_bitrate_max` | `0` (use ceiling) | Optional cap, in kbps. Has no effect on its own. |
+| `meow_viewport_following` | `enabled` | Host crops the capture to the rectangle the client is displaying, and tells it which frame first carries the crop. Off: requests are answered with the full desktop. |
+| `meow_cursor_reporting` | `enabled` | KWin sends the cursor as metadata, the host draws it back in and sends its position (`0x3004`) to clients that subscribe, so a zoomed view follows the mouse. |
+| `meow_adaptive_bitrate` | `enabled` | Encoder bitrate follows the path: loss, rising round-trip time, goodput and the client's receiver reports (`0x3005`). |
+| `adaptive_bitrate_min` | `0` (automatic) | Floor in kbps; automatic is `max(1000, 25% of negotiated)`. |
+| `adaptive_bitrate_max` | `0` (automatic) | Ceiling in kbps; automatic is the client's advertised maximum when above the negotiated rate, else the negotiated rate. `max_bitrate` always applies. |
 | `output_name` | first display | `all` streams every monitor as one region. |
 
 ```ini
-meow_viewport_following = enabled
-adaptive_bitrate_min    = 3000
-adaptive_bitrate_max    = 8000
-output_name             = all
+# to turn a feature off:
+meow_viewport_following = disabled
+meow_cursor_reporting   = disabled
+meow_adaptive_bitrate   = disabled
 ```
 
-`adaptive_bitrate_max` alone does nothing, by design — without a floor there is no range to
-adapt inside, and Sunshine logs a warning rather than silently reinterpreting your intent. The
-effective ceiling is the **smallest** of what Moonlight asked for, `max_bitrate`, and
-`adaptive_bitrate_max`; adaptation never raises the bitrate above what the client requested.
+An existing `adaptive_bitrate_min` keeps working: it is now an explicit floor instead of the
+switch that turns adaptation on. None of the new messages opens a port or needs a firewall or
+Tailscale ACL change: they ride the existing encrypted control stream, and none exceeds 24
+bytes.
 
 Full reference: [`docs/configuration.md`](../configuration.md) and
 [`docs/meow/viewport-following.md`](./viewport-following.md).
@@ -209,21 +209,67 @@ right now, instead of at a fixed guess that is either wasteful or lossy dependin
 
 ---
 
+### Measured on the reference machine (2026-09-24), and what it means for a slow link
+
+All with this tree's bundled FFmpeg or the system `ffmpeg` on the RTX 5050; the probes are in
+`tools/meow/` so every number can be re-run.
+
+- **A bitrate change costs one IDR, but no burst.** FFmpeg's NVENC wrapper reconfigures with
+  `resetEncoder`/`forceIDR` set and exposes no option to avoid it, so every adaptive-bitrate
+  change produces an IDR - measured: 1 per change, 3 in 540 frames. Because Sunshine opens NVENC
+  as CBR with a one-frame VBV, that IDR is squeezed into one frame's budget (6255 bytes against
+  neighbours of 6250 at 3 Mbps; 16672 against 16667 at 8 Mbps): a momentarily softer frame, not
+  a bandwidth spike. That is why the controller changes the rate at most every 3 s.
+- **Only NVENC and libx264 follow a runtime change.** VA-API (AMD/Intel) and libx265 ignore it.
+- **The cropped upload saves most of the per-frame copy.** Copying the 5360x1440 frame to the
+  GPU takes 3.0-4.6 ms; with a 16:9 crop of one monitor 1.2-1.4 ms, with a 2x phone zoom 0.6 ms
+  (`tools/meow/cuda_upload_probe.cu`, median of 300 interleaved copies on a shared GPU).
+- **`nvenc_preset` matters enormously for scrolling text on HEVC and AV1 - worth changing by
+  hand.** On code scrolling at half a pixel per frame (a smooth scroll decelerating), HEVC at
+  Sunshine's default `nvenc_preset = 1` (p1) spent 1708 kbps for 32.2 dB PSNR, while p3 spent
+  **323 kbps for 37.6 dB**; at a 5 Mbps target, 4454 kbps/35.4 dB against 420 kbps/42.3 dB. AV1
+  p1 behaves like HEVC p1; AV1 p2 and up is the best of all (665 kbps/46.3 dB). H.264 is not
+  affected (37.5 dB at p1 and p3), and whole-pixel scrolling is fine at p1 for every codec. p3
+  costs roughly 0.3-0.5 ms more per frame at 720p and 1-2 ms at 1080p/1440p on this GPU, so the
+  default was **not** changed; on a slow link with an HEVC or AV1 client, set
+  `nvenc_preset = 3`. Spatial and temporal AQ made no measurable difference (-0.1 to -0.5 dB).
+- **Adaptive FEC was evaluated and deferred.** Sunshine sends `fec_percentage` (default 20) parity
+  for every frame, so a clean link spends ~17% of its bits on parity. Lowering it when clean and
+  raising it for random loss is compatible with stock clients (each packet carries its own FEC
+  percentage), but it is a per-frame read in the upstream video broadcast thread fed from the
+  encoder thread, and the measured harm it would address - FEC-repaired random loss driving the
+  bitrate down - is fixed at the source instead: the controller no longer backs off on loss FEC
+  repairs. Revisit with a hardware loss profile of the Tailscale path.
+- **APPLIED is reported in the client's units.** The bitrate a client asks for is a total that
+  `rtsp.cpp` shrinks by the FEC share, audio and overhead before it reaches the encoder. The
+  host converts the client's `max_kbps` the same way before using it as a ceiling, and reports
+  APPLIED back in client units, so a client that remembers an applied rate and negotiates it
+  next session gets the same stream rather than one deducted twice.
+- **H.264 NVENC pads a static desktop to the full bitrate.** With `cbr_padding` off, an idle
+  H.264 stream still carries one filler NAL (type 12) per frame and uses the whole 8 Mbps, where
+  HEVC uses 0.04 Mbps and AV1 0.03 Mbps for the same idle desktop. Prefer HEVC or AV1 on the
+  client for desktop use over a constrained link.
+
+---
+
 ## 6. Known gaps — read before concluding something is broken
 
-- **Double magnification.** The host crops *and* the client can zoom. Both are working as
-  designed; together they over-magnify. Use one or the other until this is reconciled.
-- **VA-API is not cropped.** The crop is implemented for the software scaler and the CUDA/NVENC
-  path. `gl_cuda_vram_t` and the VA-API path both go through `egl::sws_t`, which is untouched —
-  one shader change would cover both, and it has not been made. On the reference machine
-  (NVIDIA encode) this does not bite; on an AMD-only host it means the feature silently does
-  nothing.
-- **NvFBC is reasoned about, not tested.** No NvFBC hardware was available. The kernel is
-  covered by the hardware probe; that device's `convert()` is inspection only.
-- **No end-to-end session has been run.** Every layer is unit tested and the CUDA kernel is
-  verified on the real RTX 5050 by `tools/meow/viewport_cuda_probe.cpp` — but a full
-  host-to-phone stream with cropping live has not been performed. That is what this document
-  is for.
+- **VA-API is not cropped, and does not adapt its bitrate.** The crop is implemented for the
+  software scaler and the CUDA/NVENC path; the VA-API path goes through `egl::sws_t`, which is
+  untouched, so an AMD/Intel-encode host never answers viewport requests. VA-API also ignores a
+  runtime bitrate change (measured, see `src/meow/adaptive_bitrate_encoder.h`); the log says so.
+- **The cursor is drawn by the host only on memory-buffer capture.** With KWin capture on a
+  hybrid laptop (desktop on the iGPU, NVENC on the dGPU) frames arrive in system memory and the
+  host draws the cursor. On a DMA-BUF path (pure NVIDIA, VA-API, Vulkan) KWin keeps drawing the
+  cursor and no position is sent; the client falls back to dead reckoning. If KWin negotiates a
+  format the blend cannot write (10-bit), the capture restarts once with the embedded cursor and
+  logs why.
+- **Metadata cursor mode is unverified on hardware.** KWin only authorises the installed
+  `/usr/local/bin/sunmeow` for `zkde_screencast`, so every unit test ran without it. The first
+  real run should confirm: the stream shows a cursor, it moves on an idle desktop, the cursor
+  shape (premultiplied RGBA assumed) looks right, and the log has
+  `[kwingrab] Cursor: metadata (drawn by the host, ...)`.
+- **NvFBC is reasoned about, not tested.** No NvFBC hardware was available.
 
 State each of these plainly if you report a problem; "the crop does nothing" means something
 very different on AMD than on NVIDIA.

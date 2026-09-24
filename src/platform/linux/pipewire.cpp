@@ -18,6 +18,7 @@
 #include "cuda.h"
 #include "graphics.h"
 #include "src/main.h"
+#include "src/meow/cursor_pipewire.h"  // MEOW-TOUCH(cursor): cursor metadata, blend and position
 #include "src/platform/common.h"
 #include "src/video.h"
 #include "vaapi.h"
@@ -108,6 +109,7 @@ namespace pipewire {
     std::vector<uint8_t> *front_buffer;  ///< Staging buffer currently readable by `fill_img`.
     // Points to the buffer currently being written by on_process
     std::vector<uint8_t> *back_buffer;  ///< Staging buffer currently writable by PipeWire callbacks.
+    meow::cursor::pipewire::stream_t meow_cursor;  ///< MEOW-TOUCH(cursor): metadata-mode cursor state; inert unless enabled.
 
     stream_data_t():
         front_buffer(&buffer_a),
@@ -456,6 +458,12 @@ namespace pipewire {
         return;
       }
 
+      if (stream_data.meow_cursor.enabled) {  // MEOW-TOUCH(cursor): memory frames with the cursor drawn in
+        meow::cursor::pipewire::fill_memory_img(stream_data, *static_cast<img_descriptor_t *>(img));
+        pw_thread_loop_unlock(loop);
+        return;
+      }
+
       if (!stream_data.current_buffer) {
         img->data = nullptr;
         pw_thread_loop_unlock(loop);
@@ -488,6 +496,15 @@ namespace pipewire {
      */
     void set_negotiate_maxframerate(bool negotiate_maxframerate) {
       negotiate_maxframerate_ = negotiate_maxframerate;
+    }
+
+    /**
+     * @brief MEOW-TOUCH(cursor): ask the compositor for cursor metadata on the next stream.
+     *
+     * @param enabled Whether the stream was opened in metadata pointer mode.
+     */
+    void set_meow_cursor_metadata(bool enabled) {
+      stream_data.meow_cursor.enabled = enabled;
     }
 
   private:
@@ -625,6 +642,14 @@ namespace pipewire {
         return;
       }
 
+      // MEOW-TOUCH(cursor): metadata pointer mode has its own memory path (src/meow/cursor_pipewire.h).
+      if (d->meow_cursor.enabled && b->buffer->datas[0].type != SPA_DATA_DmaBuf) {
+        meow::cursor::pipewire::process_memory(d, b, [d](pw_buffer *buffer) {
+          pw_stream_queue_buffer(d->stream, buffer);
+        });
+        return;
+      }
+
       // 2. Fast Path: DMA-BUF
       if (b->buffer->datas[0].type == SPA_DATA_DmaBuf) {
         std::scoped_lock lock(d->frame_mutex);
@@ -730,7 +755,7 @@ namespace pipewire {
 
       // Ack the buffer type and metadata
       std::array<uint8_t, SPA_POD_BUFFER_SIZE> buffer;
-      std::array<const struct spa_pod *, 3> params;
+      std::array<const struct spa_pod *, 4> params;  // MEOW-TOUCH(cursor): room for SPA_META_Cursor
       int n_params = 0;
       struct spa_pod_builder pod_builder = SPA_POD_BUILDER_INIT(buffer.data(), buffer.size());
       auto buffer_param = static_cast<const struct spa_pod *>(spa_pod_builder_add_object(&pod_builder, SPA_TYPE_OBJECT_ParamBuffers, SPA_PARAM_Buffers, SPA_PARAM_BUFFERS_dataType, SPA_POD_Int(buffer_types)));
@@ -743,6 +768,14 @@ namespace pipewire {
       auto damage_param = static_cast<const struct spa_pod *>(spa_pod_builder_add_object(&pod_builder, SPA_TYPE_OBJECT_ParamMeta, SPA_PARAM_Meta, SPA_PARAM_META_type, SPA_POD_Id(SPA_META_VideoDamage), SPA_PARAM_META_size, SPA_POD_CHOICE_RANGE_Int(sizeof(struct spa_meta_region) * videoDamageRegionCount, sizeof(struct spa_meta_region) * 1, sizeof(struct spa_meta_region) * videoDamageRegionCount)));
       params[n_params] = damage_param;
       n_params++;
+      // MEOW-TOUCH(cursor): request cursor metadata, or give up on it for a format we cannot draw into.
+      if (d->meow_cursor.enabled && !meow::cursor::pipewire::on_format(d->meow_cursor, d->format.info.raw.format, buffer_types & (1 << SPA_DATA_DmaBuf))) {
+        if (d->shared) {
+          d->shared->stream_dead.store(true);
+        }
+      } else if (d->meow_cursor.enabled) {
+        params[n_params++] = meow::cursor::pipewire::meta_param(&pod_builder);
+      }
 
       pw_stream_update_params(d->stream, params.data(), n_params);
     }
@@ -873,6 +906,10 @@ namespace pipewire {
       int pipewire_fd = -1;
       auto pipewire_node = PW_ID_ANY;  // Default for invalid stream from pipewire docs
       uint64_t pipewire_object_serial = SPA_ID_INVALID;  // Default for invalid stream from pipewire docs for PW_KEY_OBJECT_SERIAL
+      // MEOW-TOUCH(cursor): whether frames will come through memory we can draw a cursor into;
+      // only a backend that can ask for cursor metadata (KWin) acts on it in configure_stream().
+      meow_cursor_memory_path = meow::cursor::pipewire::memory_path(mem_type, n_dmabuf_infos, display_is_nvidia);
+
       // Fetch stream info
       if (configure_stream(display_name, pipewire_fd, pipewire_node, pipewire_object_serial) < 0 || (pipewire_node == PW_ID_ANY && (pipewire_object_serial & SPA_ID_INVALID) == SPA_ID_INVALID)) {
         BOOST_LOG(error) << "[pipewire] Could not find display with name: '"sv << display_name << "'";
@@ -893,6 +930,7 @@ namespace pipewire {
         shared_state->transfer_function.store(0);
       }
 
+      pipewire.set_meow_cursor_metadata(meow_cursor_metadata);  // MEOW-TOUCH(cursor)
       if (pipewire.init(pipewire_fd, pipewire_node, pipewire_object_serial, shared_state) < 0) {
         BOOST_LOG(error) << "[pipewire] Failed to init pipewire. pipewire_t::init() failed.";
         return -1;
@@ -1409,6 +1447,8 @@ namespace pipewire {
   protected:
     // Allow subclasses to access for pipewire requirements setup and stream dead checks
     pipewire_t pipewire;  ///< Pipewire.
+    bool meow_cursor_memory_path = false;  ///< MEOW-TOUCH(cursor): frames will arrive in memory buffers.
+    bool meow_cursor_metadata = false;  ///< MEOW-TOUCH(cursor): set by a backend that opened its stream in metadata pointer mode.
     std::shared_ptr<shared_state_t> shared_state;  ///< Shared state.
   };
 }  // namespace pipewire

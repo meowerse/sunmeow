@@ -781,7 +781,8 @@ namespace config {
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
-    false,  // MEOW-TOUCH(viewport): viewport_following, off by default
+    true,  // MEOW-TOUCH(viewport): viewport_following, on by default
+    true,  // MEOW-TOUCH(cursor): cursor_reporting, on by default
 
     {
       video_t::dd_t::config_option_e::disabled,  // configuration_option
@@ -797,8 +798,9 @@ namespace config {
     },  // display_device
 
     0,  // max_bitrate
-    0,  // adaptive_bitrate_min (MEOW-TOUCH(adaptive-bitrate): 0 = adaptation off, today's behaviour)
-    0,  // adaptive_bitrate_max (MEOW-TOUCH(adaptive-bitrate): 0 = use the effective ceiling)
+    true,  // adaptive_bitrate (MEOW-TOUCH(adaptive-bitrate): on by default)
+    0,  // adaptive_bitrate_min (MEOW-TOUCH(adaptive-bitrate): 0 = automatic floor)
+    0,  // adaptive_bitrate_max (MEOW-TOUCH(adaptive-bitrate): 0 = automatic ceiling)
     0  // minimum_fps_target (0 = framerate)
   };
 
@@ -1703,6 +1705,7 @@ namespace config {
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);
     bool_f(vars, "meow_viewport_following", video.viewport_following);  // MEOW-TOUCH(viewport)
+    bool_f(vars, "meow_cursor_reporting", video.cursor_reporting);  // MEOW-TOUCH(cursor)
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
     generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);
@@ -1726,6 +1729,7 @@ namespace config {
     }
 
     int_f(vars, "max_bitrate", video.max_bitrate);
+    bool_f(vars, "meow_adaptive_bitrate", video.adaptive_bitrate);  // MEOW-TOUCH(adaptive-bitrate)
     int_f(vars, "adaptive_bitrate_min", video.adaptive_bitrate_min);
     int_f(vars, "adaptive_bitrate_max", video.adaptive_bitrate_max);
     // MEOW-TOUCH(adaptive-bitrate): correct impossible bounds loudly instead of honouring them.

@@ -456,4 +456,64 @@ namespace {
   }
 #endif
 
+  // -------------------------------------------------------------------------------
+  // Cropped upload: only the texels a crop samples cross PCIe.
+  // -------------------------------------------------------------------------------
+
+  TEST(MeowViewportCuda, UncroppedUploadsTheWholeFrameExactlyAsUpstream) {
+    const auto base = upstream_baseline(capture_w, capture_h, surface_w, surface_h);
+    EXPECT_EQ(meow::viewport::cuda_upload_rect(base, capture_w, capture_h), (rect_t {0, 0, capture_w, capture_h}));
+    EXPECT_EQ(meow::viewport::cuda_upload_rect(base, 0, 0), (rect_t {0, 0, 0, 0}));
+  }
+
+  TEST(MeowViewportCuda, ACropUploadsItsSpanPlusTheSamplingMargin) {
+    const auto base = upstream_baseline(capture_w, capture_h, surface_w, surface_h);
+    const auto cropped = plan(capture_w, capture_h, surface_w, surface_h, rect_t {1920, 180, 1920, 1080});
+    const auto config = cuda_scaler_config(cropped, base, capture_w, capture_h, surface_w, surface_h);
+    ASSERT_TRUE(config.cropped);
+    const auto r = meow::viewport::cuda_upload_rect(config, capture_w, capture_h);
+    EXPECT_LE(r.x, 1920);
+    EXPECT_GE(r.x, 1920 - meow::viewport::cuda_upload_margin);
+    EXPECT_LE(r.y, 180);
+    EXPECT_GE(r.x + r.width, 1920 + 1920);
+    EXPECT_LE(r.x + r.width, 1920 + 1920 + 2 * meow::viewport::cuda_upload_margin + 2);
+    EXPECT_GE(r.y + r.height, 180 + 1080);
+    // A phone-shaped crop of the 5360x1440 desktop uploads ~27% of the frame.
+    const double fraction = static_cast<double>(r.width) * r.height / (static_cast<double>(capture_w) * capture_h);
+    EXPECT_LT(fraction, 0.28);
+  }
+
+  TEST(MeowViewportCuda, EveryTexelAKernelCanSampleIsUploaded) {
+    // Property over many crops: the upload covers origin + i * step for every destination
+    // column/row, plus the bilinear neighbour, and never leaves the frame.
+    const auto base = upstream_baseline(capture_w, capture_h, surface_w, surface_h);
+    std::mt19937 rng {42};
+    int checked = 0;
+    for (int i = 0; i < 5000; ++i) {
+      const rect_t request {static_cast<int>(rng() % capture_w), static_cast<int>(rng() % capture_h), 64 + static_cast<int>(rng() % capture_w), 64 + static_cast<int>(rng() % capture_h)};
+      const auto config = cuda_scaler_config(plan(capture_w, capture_h, surface_w, surface_h, request), base, capture_w, capture_h, surface_w, surface_h);
+      if (!config.cropped) {
+        continue;
+      }
+      ++checked;
+      const auto r = meow::viewport::cuda_upload_rect(config, capture_w, capture_h);
+      ASSERT_GE(r.x, 0);
+      ASSERT_GE(r.y, 0);
+      ASSERT_LE(r.x + r.width, capture_w);
+      ASSERT_LE(r.y + r.height, capture_h);
+      for (const int d : {0, config.dest.width - 1}) {
+        const float sx = config.source.originX + d * config.source.stepX;
+        // Clamp addressing maps a sample left of 0 to 0, so the lowest texel read is max(0, .).
+        ASSERT_LE(r.x, std::max(0, static_cast<int>(std::floor(sx - 0.5f)))) << i;
+        ASSERT_LE(std::min(static_cast<int>(std::ceil(sx + config.source.stepX)) + 1, capture_w), r.x + r.width) << i;
+      }
+      for (const int d : {0, config.dest.height - 1}) {
+        const float sy = config.source.originY + d * config.source.stepY;
+        ASSERT_LE(r.y, std::max(0, static_cast<int>(std::floor(sy - 0.5f)))) << i;
+        ASSERT_LE(std::min(static_cast<int>(std::ceil(sy + config.source.stepY)) + 1, capture_h), r.y + r.height) << i;
+      }
+    }
+    EXPECT_GT(checked, 1000);
+  }
+
 }  // namespace

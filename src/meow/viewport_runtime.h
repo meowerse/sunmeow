@@ -43,8 +43,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -136,9 +139,76 @@ namespace meow::viewport {
     inline std::atomic<bool> accepting {false};
 
     /**
-     * @brief Set when the host dropped a crop on its own, and has not told the client yet.
+     * @brief Incremented after every change the client must be told about.
+     *
+     * The control thread bumps it after publishing a new `requested` rectangle (release), and
+     * `on_scaler_init()` bumps it when it drops a crop the client still believes in (a
+     * revocation). The encode thread compares it with `planned_generation` to know that the
+     * next frame it produces must be echoed, and that an idle desktop must be re-converted.
      */
-    inline std::atomic<bool> revoked {false};
+    inline std::atomic<std::uint32_t> generation {0};
+
+    /**
+     * @brief The `generation` the encode thread's last plan was made from.
+     *
+     * Written by `plan_for_frame()` on the encode thread only.
+     */
+    inline std::atomic<std::uint32_t> planned_generation {0};
+
+    /**
+     * @brief The source rectangle of that plan, packed by `pack()`.
+     */
+    inline std::atomic<std::uint64_t> planned_source {0};
+
+    /**
+     * @brief The last `planned_generation` an echo was published for (encode thread only).
+     */
+    inline std::atomic<std::uint32_t> echoed_generation {0};
+
+    /**
+     * @brief The last `generation` the encode thread re-converted an idle frame for.
+     */
+    inline std::atomic<std::uint32_t> reconverted_generation {0};
+
+    /**
+     * @brief The current session's most recent request, in its reference-frame coordinates,
+     *        packed by `pack()`; 0 = none.
+     *
+     * Re-evaluated by every `on_scaler_init()`. That is what answers a start-of-stream probe
+     * that beat the session's own encoder initialisation - whether no scaler existed yet, or
+     * the host's startup encoder probing left a stale one that the probe was evaluated
+     * against - and what carries the client's crop across an encoder reinit instead of
+     * dropping it. Cleared when a new session starts (`forget_request()`) and by `reset()`, so
+     * one client's view can never be applied to another's stream.
+     */
+    inline std::atomic<std::uint64_t> last_request {0};
+
+    /**
+     * @brief Whether `last_request` may crop (the feature gate at the time it arrived).
+     */
+    inline std::atomic<bool> last_allow_crop {false};
+
+    /**
+     * @brief Sequence number of the most recently published echo; 0 = none yet.
+     */
+    inline std::atomic<std::uint32_t> echo_seq {0};
+
+    /**
+     * @brief The highest `echo_seq` the control thread has sent to any session.
+     */
+    inline std::atomic<std::uint32_t> control_sent_seq {0};
+
+    /**
+     * @brief When a request last arrived or an echo was last published, in steady-clock
+     *        nanoseconds since its epoch; lets the control thread poll quickly for a while.
+     */
+    inline std::atomic<std::int64_t> echo_activity_ns {0};
+
+    /**
+     * @brief Guards `echo_value`. Taken only when an echo is published or sent - never on a
+     *        frame where nothing changed.
+     */
+    inline std::mutex echo_mutex;
 
   }  // namespace detail
 
@@ -149,9 +219,17 @@ namespace meow::viewport {
     rect_t applied {};  ///< Applied rectangle, in reference-frame (negotiated stream) pixels.
     int capture_width {};  ///< Captured desktop width, so the client can derive the padding transform.
     int capture_height {};  ///< Captured desktop height.
+    std::uint32_t frame_index {};  ///< First encoded frame produced with `applied` (the client's `DECODE_UNIT.frameNumber`).
 
     bool operator==(const echo_t &) const = default;
   };
+
+  namespace detail {
+    /**
+     * @brief The most recently published echo. Guarded by `echo_mutex`.
+     */
+    inline echo_t echo_value {};
+  }  // namespace detail
 
   /**
    * @brief Whether viewport following is enabled in the host configuration.
@@ -159,26 +237,18 @@ namespace meow::viewport {
    * Reads `config::video.viewport_following`, which `config.cpp` fills from the
    * `meow_viewport_following` key like every other Sunshine setting.
    *
-   * An earlier revision parsed the key out of the configuration file here instead, to avoid
-   * an upstream edit. That was the wrong trade: Sunshine's own parser never learned the key
-   * existed, so it logged `Unrecognized configurable option [meow_viewport_following]` at
-   * every startup — telling a user who had just enabled the feature that the setting does
-   * not exist. Registering it properly also lets it appear in the web UI, which an
-   * out-of-band read never can.
+   * **Defaults to on** (it used to default to off). The reasons it was off are gone:
    *
-   * **Defaults to off.** Three reasons, in descending order of importance:
+   *  1. Absolute pointer and touch input used to land in the wrong place while a crop was
+   *     active, because the host maps it through `video::make_port()` against the *full*
+   *     captured desktop. The moonmeow client now maps every absolute coordinate through its
+   *     own logical view into the **uncropped** reference frame before sending it, so the
+   *     host's full-desktop mapping is exactly right and must stay as it is.
+   *  2. The client composes its local zoom with the host crop on the exact decoded frame the
+   *     echo names (`frame_index`), so there is no double magnification to guard against.
    *
-   *  1. Client-supplied absolute pointer and touch coordinates are still mapped through
-   *     `video::make_port()`, which knows only the *full* captured desktop. While a crop
-   *     is active those coordinates land in the wrong place. Cropping is therefore an
-   *     opt-in trade — dramatically more readable text in exchange for pointer input that
-   *     needs the matching host-side remap, which this change does not yet include.
-   *  2. CLAUDE.md's compatibility floor: an existing working setup must not change
-   *     behaviour on upgrade. A user who never edits their config gets exactly the stream
-   *     they had yesterday.
-   *  3. It does not cover every scaling path (see the coverage note in `configure_scaler()`).
-   *     The software and CUDA/NVENC scalers crop; VA-API does not, so on those hosts the
-   *     setting would advertise a feature that silently does nothing.
+   * It still covers only the software and CUDA scaling paths; VA-API does not crop, and a host
+   * on that path simply never answers a request (the client keeps its local zoom).
    *
    * @return `true` when `meow_viewport_following` is enabled.
    */
@@ -187,11 +257,73 @@ namespace meow::viewport {
   }
 
   /**
+   * @brief The geometry most recently published by a scaler.
+   */
+  struct geometry_t {
+    int capture_width {};  ///< Captured frame width.
+    int capture_height {};  ///< Captured frame height.
+    int surface_width {};  ///< Encode surface (negotiated stream) width.
+    int surface_height {};  ///< Encode surface height.
+  };
+
+  /**
+   * @brief Unpack a geometry word.
+   * @param packed Packed geometry.
+   * @return The geometry; all zero when nothing was published.
+   */
+  [[nodiscard]] inline geometry_t unpack_geometry(const std::uint64_t packed) noexcept {
+    return {static_cast<int>(packed & 0xFFFF), static_cast<int>((packed >> 16) & 0xFFFF), static_cast<int>((packed >> 32) & 0xFFFF), static_cast<int>((packed >> 48) & 0xFFFF)};
+  }
+
+  /**
+   * @brief The geometry the host is currently streaming, when a scaler has published one.
+   *
+   * Used by cursor reporting to map a captured-pixel position into the reference frame.
+   *
+   * @return The geometry, or `std::nullopt` when no scaler is active.
+   */
+  [[nodiscard]] inline std::optional<geometry_t> current_geometry() noexcept {
+    if (!detail::accepting.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+    const auto g = unpack_geometry(detail::geometry.load(std::memory_order_relaxed));
+    if (g.capture_width <= 0 || g.capture_height <= 0 || g.surface_width <= 0 || g.surface_height <= 0) {
+      return std::nullopt;
+    }
+    return g;
+  }
+
+  /**
+   * @brief Evaluate a reference-frame request against a geometry and publish the result.
+   *
+   * @param in_frame Requested rectangle in reference-frame pixels.
+   * @param g Geometry to evaluate against.
+   * @param allow_crop Whether the host may crop; when false the answer is always "full frame".
+   */
+  inline void publish_request(const rect_t &in_frame, const geometry_t &g, const bool allow_crop) noexcept {
+    std::uint64_t packed = 0;
+    if (allow_crop) {
+      const auto requested = fit_request(to_desktop(in_frame, g.capture_width, g.capture_height, g.surface_width, g.surface_height), g.capture_width, g.capture_height, g.surface_width, g.surface_height);
+      const auto applied = plan(g.capture_width, g.capture_height, g.surface_width, g.surface_height, requested);
+      if (applied.cropped && requested) {
+        packed = detail::pack(*requested);
+      }
+    }
+    detail::requested.store(packed, std::memory_order_relaxed);
+    // Release: the encode thread acquires `generation` before it reads `requested`.
+    detail::generation.fetch_add(1, std::memory_order_release);
+  }
+
+  /**
    * @brief Publish the geometry of a freshly initialised scaler and reset to full desktop.
    *
-   * Called from `avcodec_software_encode_device_t::init()`. Claims ownership for `token`
-   * and drops any rectangle left over from a previous session, a previous display mode or
-   * a previous encoder reinit — which is what makes a stale crop unable to leak forward.
+   * Called from `avcodec_software_encode_device_t::init()` and `cuda_t::set_frame()`. Claims
+   * ownership for `token` and drops any rectangle left over from a previous session, a
+   * previous display mode or a previous encoder reinit - which is what makes a stale crop
+   * unable to leak forward. Dropping a crop the client still believes in is a revocation: it
+   * bumps `generation`, so the first frame this scaler encodes is echoed as full frame.
+   *
+   * A request that arrived before any geometry existed is evaluated here.
    *
    * @param token Address identifying the scaler; compared, never dereferenced.
    * @param capture_width Width of the captured frame in pixels.
@@ -203,14 +335,23 @@ namespace meow::viewport {
     const auto f = [](const int v) noexcept {
       return static_cast<std::uint64_t>(static_cast<std::uint16_t>(std::clamp(v, 0, 0xFFFF)));
     };
-    // Dropping a crop the client still believes in is exactly the case that leaves it
-    // showing the whole desktop at 1:1 after it reset its own zoom, so remember to say so.
-    if (detail::requested.exchange(0, std::memory_order_relaxed) != 0) {
-      detail::revoked.store(true, std::memory_order_relaxed);
-    }
+    const bool revoked = detail::requested.exchange(0, std::memory_order_relaxed) != 0;
+    // Nothing is owed for anything that happened before this scaler existed...
+    const auto current = detail::generation.load(std::memory_order_acquire);
+    detail::planned_generation.store(current, std::memory_order_relaxed);
+    detail::echoed_generation.store(current, std::memory_order_relaxed);
+    detail::reconverted_generation.store(current, std::memory_order_relaxed);
     detail::geometry.store(f(capture_width) | (f(capture_height) << 16) | (f(surface_width) << 32) | (f(surface_height) << 48), std::memory_order_relaxed);
     detail::owner.store(token, std::memory_order_release);
     detail::accepting.store(true, std::memory_order_release);
+
+    // ...except the session's own request, evaluated against this geometry (it may have been
+    // answered against a stale one, or not at all), or a crop we just dropped.
+    if (const auto last = detail::unpack(detail::last_request.load(std::memory_order_acquire))) {
+      publish_request(*last, {capture_width, capture_height, surface_width, surface_height}, detail::last_allow_crop.load(std::memory_order_relaxed));
+    } else if (revoked) {
+      detail::generation.fetch_add(1, std::memory_order_release);
+    }
   }
 
   /**
@@ -228,125 +369,172 @@ namespace meow::viewport {
     // its last crop instead. `accepting` then stops any further request being answered, so
     // nothing can re-crop on the way out.
     detail::requested.store(0, std::memory_order_relaxed);
-    detail::revoked.store(false, std::memory_order_relaxed);
+    detail::last_request.store(0, std::memory_order_relaxed);
     detail::accepting.store(false, std::memory_order_release);
+  }
+
+  /**
+   * @brief Forget the previous session's request; called when a streaming session is created.
+   *
+   * Without this, a scaler initialised for a new session would re-apply the *previous*
+   * client's crop to a client that never asked for one - possibly a stock client that cannot
+   * even tell. With several concurrent sessions (`channels > 1`, off by default) only the most
+   * recent client's view is followed, as before.
+   */
+  inline void forget_request() noexcept {
+    detail::last_request.store(0, std::memory_order_relaxed);
   }
 
   /**
    * @brief Handle a viewport packet from the control stream.
    *
-   * Parses the request, maps it out of the client's coordinate system, validates it,
-   * stores it, and reports back what to tell the client. The applied rectangle is
-   * frequently *not* the requested one — it is clamped to the desktop, grown to a minimum
-   * size, even-aligned for chroma, and refused outright when its aspect ratio would scale
-   * to a sliver.
+   * Parses the request, maps it out of the client's coordinate system, validates it and
+   * publishes it for the encode thread. Nothing is sent from here: the echo is produced on the
+   * encode path, after the first frame carrying the applied rectangle has been encoded, so it
+   * can name that frame (`echo_t::frame_index`) and so an idle desktop still gets an answer
+   * (the encode thread re-converts its last captured image when a request arrives).
+   *
+   * Every understood request is answered, including one the host refuses to crop for - that
+   * echo (the full frame) is how the client learns it is talking to a meow host at all.
    *
    * Runs on the control thread.
    *
-   * Split from `on_request()` so the state machine can be driven in a unit test. The
-   * config gate reads a file once into a function-local static, which a test cannot
-   * influence — folding it in here would make every test of this function pass
-   * vacuously, which is worse than not testing it (CLAUDE.md §5).
-   *
    * @param payload Control-stream payload, excluding the header.
-   * @return What to send back, or `std::nullopt` when nothing can be reported — no scaler
-   *         has published its geometry, in which case we do not even know the coordinate
-   *         system an answer would be in.
+   * @param allow_crop Whether the host configuration allows cropping.
+   * @return `false` when the message was not understood and nothing changed.
    */
-  [[nodiscard]] inline std::optional<echo_t> apply_request(const std::string_view payload) {
+  inline bool apply_request(const std::string_view payload, const bool allow_crop) {
+    const auto in_frame = parse_payload(payload);
+    if (!in_frame) {
+      // Truncated, wrong version, or a degenerate rectangle. Ignore it entirely rather than
+      // reading it as a request to stop cropping.
+      return false;
+    }
+    detail::last_allow_crop.store(allow_crop, std::memory_order_relaxed);
+    detail::last_request.store(detail::pack(*in_frame), std::memory_order_release);
+    detail::echo_activity_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+
     // Acquire on `accepting` first, then read `geometry`. `on_scaler_init()` writes the
-    // geometry before releasing this flag, so the ordering is what guarantees the two are a
-    // matched pair rather than a torn read across an encoder reinit. It is also false on a
-    // host whose encoder never takes the software scaling path, which is how such a host
-    // stays silent instead of promising a crop it will not apply.
-    if (!detail::accepting.load(std::memory_order_acquire)) {
-      return std::nullopt;
+    // geometry before releasing this flag, so the two are a matched pair.
+    const auto packed_geometry = detail::accepting.load(std::memory_order_acquire) ? detail::geometry.load(std::memory_order_relaxed) : 0;
+    const auto g = unpack_geometry(packed_geometry);
+    if (g.capture_width <= 0 || g.capture_height <= 0 || g.surface_width <= 0 || g.surface_height <= 0) {
+      // No scaler yet: the start-of-stream probe can beat encoder initialisation. It is kept in
+      // `last_request` for `on_scaler_init()` rather than dropped.
+      return true;
     }
-
-    const auto packed_geometry = detail::geometry.load(std::memory_order_relaxed);
-    if (packed_geometry == 0) {
-      // No scaler has initialised, or this session does not run through the software
-      // scaling path at all. Without the captured desktop size we cannot even name the
-      // coordinate system an answer would be in, so say nothing: the client treats the
-      // absence of an echo as "not applied".
-      return std::nullopt;
-    }
-
-    const auto capture_width = static_cast<int>(packed_geometry & 0xFFFF);
-    const auto capture_height = static_cast<int>((packed_geometry >> 16) & 0xFFFF);
-    const auto surface_width = static_cast<int>((packed_geometry >> 32) & 0xFFFF);
-    const auto surface_height = static_cast<int>((packed_geometry >> 48) & 0xFFFF);
-
-    const auto outcome = evaluate_request(payload, capture_width, capture_height, surface_width, surface_height);
-    if (!outcome.understood) {
-      // Change nothing and say nothing. See `request_outcome_t::understood`.
-      return std::nullopt;
-    }
-
-    detail::requested.store(outcome.publish ? detail::pack(*outcome.publish) : 0, std::memory_order_relaxed);
-    // Whatever we just decided, the client is about to be told it, so there is no
-    // outstanding revocation left to report.
-    detail::revoked.store(false, std::memory_order_relaxed);
-    if (!outcome.echo) {
-      return std::nullopt;
-    }
-    return echo_t {*outcome.echo, capture_width, capture_height};
+    publish_request(*in_frame, g, allow_crop);
+    return true;
   }
 
   /**
    * @brief `apply_request()`, gated on the host configuration.
    *
-   * The entry point `src/stream.cpp` registers. When the feature is off this does nothing
-   * at all — no state is written and no echo is sent — so a client that speaks the
-   * extension against a host that has not opted in gets today's behaviour and can tell,
-   * from the absence of an echo, that its request was not honoured.
+   * The entry point `src/stream.cpp` registers. With the feature off every request is still
+   * answered, with the full frame, so the client can tell a meow host from a stock one.
    *
    * @param payload Control-stream payload, excluding the header.
-   * @return What to send back, or `std::nullopt`.
+   * @return `false` when the message was not understood.
    */
-  [[nodiscard]] inline std::optional<echo_t> on_request(const std::string_view payload) {
-    if (!following_enabled()) {
-      return std::nullopt;
-    }
-    return apply_request(payload);
+  inline bool on_request(const std::string_view payload) {
+    return apply_request(payload, following_enabled());
   }
 
   /**
-   * @brief Claim an unreported revocation, if the host dropped a crop on its own.
+   * @brief Publish the echo for the frame just encoded, if one is owed.
    *
-   * The echo is load-bearing: a client that has reset its local zoom to 1:1 on the strength
-   * of an earlier echo, and is then silently handed the full desktop again, shows it at 1:1
-   * with no way to know. The host drops a crop by itself on an encoder reinit or a display
-   * mode change mid-session (`on_scaler_init()`), and this is how the client finds out.
+   * Called on the encode thread right after a frame was handed to the encoder. In the steady
+   * state this is two relaxed atomic loads and a compare - no lock, no allocation.
    *
-   * One-shot: the flag is cleared by the read, so a caller that loses the returned value
-   * loses the notification. That is deliberate -- retrying forever would spam the control
-   * channel, and the next request the client sends is answered anyway.
-   *
-   * @return The full-content-area echo to send, or `std::nullopt` when nothing is pending.
+   * @param frame_index The frame number that frame carries on the wire.
    */
-  [[nodiscard]] inline std::optional<echo_t> take_revocation_echo() noexcept {
-    if (!detail::revoked.exchange(false, std::memory_order_relaxed)) {
-      return std::nullopt;
+  inline void on_frame_encoded(const std::int64_t frame_index) {
+    const auto planned = detail::planned_generation.load(std::memory_order_relaxed);
+    if (planned == detail::echoed_generation.load(std::memory_order_relaxed)) {
+      return;
     }
-    if (!detail::accepting.load(std::memory_order_acquire)) {
-      return std::nullopt;
-    }
+    detail::echoed_generation.store(planned, std::memory_order_relaxed);
 
-    const auto packed_geometry = detail::geometry.load(std::memory_order_relaxed);
-    if (packed_geometry == 0) {
-      return std::nullopt;
+    const auto g = unpack_geometry(detail::geometry.load(std::memory_order_relaxed));
+    const auto source = detail::unpack(detail::planned_source.load(std::memory_order_relaxed));
+    if (!source || g.capture_width <= 0 || g.surface_width <= 0) {
+      return;
     }
-    const auto capture_width = static_cast<int>(packed_geometry & 0xFFFF);
-    const auto capture_height = static_cast<int>((packed_geometry >> 16) & 0xFFFF);
-    const auto surface_width = static_cast<int>((packed_geometry >> 32) & 0xFFFF);
-    const auto surface_height = static_cast<int>((packed_geometry >> 48) & 0xFFFF);
+    echo_t echo {to_reference(*source, g.capture_width, g.capture_height, g.surface_width, g.surface_height), g.capture_width, g.capture_height, static_cast<std::uint32_t>(frame_index)};
+    if (echo.applied.width <= 0 || echo.applied.height <= 0) {
+      return;
+    }
+    {
+      std::lock_guard lock {detail::echo_mutex};
+      detail::echo_value = echo;
+    }
+    detail::echo_seq.fetch_add(1, std::memory_order_release);
+    detail::echo_activity_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+  }
 
-    const auto full = to_reference({0, 0, capture_width, capture_height}, capture_width, capture_height, surface_width, surface_height);
-    if (full.width <= 0 || full.height <= 0) {
+  /**
+   * @brief Whether an echo is being produced or waits to be sent.
+   *
+   * The encode thread publishes the echo, but nothing wakes the control thread, which otherwise
+   * sleeps in `enet_host_service()` for up to 150 ms. The client presents cropped frames with
+   * its old mapping until the echo arrives, so that sleep would show as a flash of double
+   * magnification. While this is true the control loop polls quickly. Bounded to one second
+   * after the last request or echo, so an echo nobody is connected to receive cannot keep the
+   * loop spinning.
+   *
+   * @param now Current time.
+   * @return True when the control thread should poll quickly.
+   */
+  [[nodiscard]] inline bool echo_owed(const std::chrono::steady_clock::time_point now) noexcept {
+    const bool owed = detail::generation.load(std::memory_order_relaxed) != detail::echoed_generation.load(std::memory_order_relaxed) || detail::echo_seq.load(std::memory_order_acquire) != detail::control_sent_seq.load(std::memory_order_relaxed);
+    return owed && now.time_since_epoch().count() - detail::echo_activity_ns.load(std::memory_order_relaxed) < std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds {1}).count();
+  }
+
+  /**
+   * @brief The echo a session has not been sent yet, if any.
+   *
+   * Each session remembers the last `echo_seq` it sent, so every connected session gets the
+   * latest echo exactly once, and a session created later never receives an older one.
+   *
+   * @param last_sent In/out: the last sequence number this session sent.
+   * @return The echo to send, or `std::nullopt`.
+   */
+  [[nodiscard]] inline std::optional<echo_t> take_echo(std::uint32_t &last_sent) {
+    const auto seq = detail::echo_seq.load(std::memory_order_acquire);
+    if (seq == last_sent) {
       return std::nullopt;
     }
-    return echo_t {full, capture_width, capture_height};
+    last_sent = seq;
+    detail::control_sent_seq.store(seq, std::memory_order_relaxed);
+    std::lock_guard lock {detail::echo_mutex};
+    return detail::echo_value;
+  }
+
+  /**
+   * @brief The current echo sequence number, for a session that starts now.
+   * @return The sequence number.
+   */
+  [[nodiscard]] inline std::uint32_t current_echo_seq() noexcept {
+    return detail::echo_seq.load(std::memory_order_acquire);
+  }
+
+  /**
+   * @brief Whether the encode thread must re-convert its last image to honour a request.
+   *
+   * KWin delivers frames only on damage, so on an idle desktop a pan would otherwise never
+   * reach the encoder. True once per new `generation` that no plan has consumed yet; false
+   * again after the attempt, so a scaler that never plans (VA-API) is not re-converted every
+   * frame. Two relaxed loads in the steady state.
+   *
+   * @return True when the caller should convert its last captured image again.
+   */
+  [[nodiscard]] inline bool needs_reconvert() noexcept {
+    const auto current = detail::generation.load(std::memory_order_acquire);
+    if (current == detail::planned_generation.load(std::memory_order_relaxed) || current == detail::reconverted_generation.load(std::memory_order_relaxed)) {
+      return false;
+    }
+    detail::reconverted_generation.store(current, std::memory_order_relaxed);
+    return true;
   }
 
   /**
@@ -406,6 +594,9 @@ namespace meow::viewport {
       return std::nullopt;
     }
 
+    // Acquire `generation` before reading `requested`: the control thread publishes in the
+    // opposite order, so the rectangle read here is at least as new as the generation.
+    const auto generation = detail::generation.load(std::memory_order_acquire);
     auto requested = detail::unpack(detail::requested.load(std::memory_order_relaxed));
     if (requested && (frame_width < capture_width || frame_height < capture_height)) {
       // The frame in hand is smaller than the one we were initialised for. Tighten the
@@ -413,7 +604,11 @@ namespace meow::viewport {
       requested = sanitize(*requested, std::min(capture_width, std::max(frame_width, 0)), std::min(capture_height, std::max(frame_height, 0)));
     }
 
-    return plan(capture_width, capture_height, surface_width, surface_height, requested);
+    const auto planned = plan(capture_width, capture_height, surface_width, surface_height, requested);
+    // Remember what this frame was planned from, for the echo `on_frame_encoded()` owes.
+    detail::planned_source.store(detail::pack(planned.source), std::memory_order_relaxed);
+    detail::planned_generation.store(generation, std::memory_order_relaxed);
+    return planned;
   }
 
   /**
@@ -620,43 +815,80 @@ namespace meow::viewport {
   /**
    * @brief Register the viewport handler on the control stream, refusing on a collision.
    *
-   * Templated on the server and the echo callback so this header needs to know nothing
-   * about `stream::session_t` or `stream::control_server_t`, both of which are private to
-   * `src/stream.cpp`.
+   * Templated on the server so this header needs to know nothing about `stream::session_t`
+   * or `stream::control_server_t`, both of which are private to `src/stream.cpp`.
    *
    * `table`/`count` are the host's real `packetTypes` array. If `control_packet_type` ever
    * appears in it, the handler is *not* installed: dispatching a genuine upstream message
    * into this handler would break whatever feature owned the number, silently.
    *
+   * The handler is installed whether or not cropping is enabled: with it off every request is
+   * answered with the full frame, which is how a client learns the host speaks the protocol.
+   *
    * @tparam Server Control server type exposing `map(type, callback)`.
-   * @tparam Echo Callable `(session *, const rect_t &)` that sends the applied rectangle back.
    * @param server Control server to register on.
    * @param table The host's control-stream packet type table.
    * @param count Number of entries in `table`.
-   * @param echo Callback used to echo the applied rectangle to the client.
-   * @param enabled Whether the host configuration opts in; passed rather than read here so
-   *        the whole decision is testable (the config gate reads a file once into a
-   *        function-local static that a test cannot influence).
+   * @param enabled Whether the host configuration allows cropping (for the log line).
    * @return What happened, and what to log about it.
    */
-  template<class Server, class Echo>
-  [[nodiscard]] registration_t map_request_handler(Server &server, const short *const table, const std::size_t count, Echo echo, const bool enabled) {
+  template<class Server>
+  [[nodiscard]] registration_t map_request_handler(Server &server, const short *const table, const std::size_t count, const bool enabled) {
     if (packet_type_collision(table, count)) {
       return {false, following_status(false), packet_type_collision_warning()};
     }
-    if (!enabled) {
-      // Install nothing. The feature is then genuinely inert rather than merely quiet: a
-      // viewport packet from a client that speaks the extension falls through to
-      // `control_server_t::call()`'s unknown-type path, which logs at debug and returns.
-      return {false, following_status(false), {}};
+    server.map(control_packet_type, [](auto *, const std::string_view &payload) {
+      static_cast<void>(on_request(payload));
+    });
+    return {true, following_status(enabled), {}};
+  }
+
+  /**
+   * @brief The encode loop's side of viewport following.
+   *
+   * Lives on `encode_run()`'s stack. It keeps a reference to the last captured image, so a
+   * request that arrives while the desktop is idle can be honoured by converting that image
+   * again, and it publishes the echo once the first frame with the applied rectangle has
+   * been encoded. Per frame it costs a shared_ptr copy and a handful of relaxed atomic loads.
+   *
+   * @tparam Image Captured image type (`platf::img_t`).
+   */
+  template<class Image>
+  class encode_hook_t {
+  public:
+    /**
+     * @brief Remember the image just converted.
+     * @param img The image.
+     */
+    void remember(const std::shared_ptr<Image> &img) {
+      last_ = img;
     }
 
-    server.map(control_packet_type, [echo](auto *session, const std::string_view &payload) {
-      if (const auto applied = apply_request(payload)) {
-        echo(session, *applied);
+    /**
+     * @brief Re-convert the last image when a request has not reached the scaler yet.
+     *
+     * @tparam Session Encode session exposing `int convert(Image &)`.
+     * @param session The encode session.
+     * @return Nonzero when the conversion failed (fatal for the session, like any convert()).
+     */
+    template<class Session>
+    int refresh(Session &session) {
+      if (!last_ || !needs_reconvert()) {
+        return 0;
       }
-    });
-    return {true, following_status(true), {}};
-  }
+      return session.convert(*last_);
+    }
+
+    /**
+     * @brief Publish the echo owed for the frame just encoded, if any.
+     * @param frame_index Frame number of that frame.
+     */
+    static void encoded(const std::int64_t frame_index) {
+      on_frame_encoded(frame_index);
+    }
+
+  private:
+    std::shared_ptr<Image> last_;  ///< Last captured image converted.
+  };
 
 }  // namespace meow::viewport

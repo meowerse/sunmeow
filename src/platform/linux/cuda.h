@@ -141,6 +141,8 @@ namespace cuda {
     void apply_colorspace(const video::sunshine_colorspace_t &colorspace);
 
     int load_ram(platf::img_t &img, cudaArray_t array);
+    // MEOW-TOUCH(viewport-cuda): upload only the rectangle a crop samples, at its own offset.
+    int load_ram_region(platf::img_t &img, cudaArray_t array, int x, int y, int width, int height);
 
     ptr_t color_matrix;
 

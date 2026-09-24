@@ -519,9 +519,9 @@ namespace kwin {
       if (kde_screencast_v1_) {
         if (region.valid) {
           // MEOW-TOUCH(unified-desktop-capture): stream_region takes LOGICAL coordinates.
-          kde_screencast_stream_v1_ = zkde_screencast_unstable_v1_stream_region(kde_screencast_v1_, region.x, region.y, static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height), wl_fixed_from_double(region.scale), ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED);
+          kde_screencast_stream_v1_ = zkde_screencast_unstable_v1_stream_region(kde_screencast_v1_, region.x, region.y, static_cast<uint32_t>(region.width), static_cast<uint32_t>(region.height), wl_fixed_from_double(region.scale), pointer_mode);  // MEOW-TOUCH(cursor): was POINTER_EMBEDDED
         } else {
-          kde_screencast_stream_v1_ = zkde_screencast_unstable_v1_stream_output(kde_screencast_v1_, output, ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED);
+          kde_screencast_stream_v1_ = zkde_screencast_unstable_v1_stream_output(kde_screencast_v1_, output, pointer_mode);  // MEOW-TOUCH(cursor): was POINTER_EMBEDDED
         }
         zkde_screencast_stream_unstable_v1_add_listener(kde_screencast_stream_v1_, &stream_listener, this);
       } else {
@@ -637,6 +637,7 @@ namespace kwin {
     uint32_t out_node_id = PW_ID_ANY;  ///< Out node ID.
     uint64_t out_objectserial = SPA_ID_INVALID;  ///< Out objectserial.
     std::shared_ptr<output_parameter_t> out_params = nullptr;  ///< Out params.
+    uint32_t pointer_mode = ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED;  ///< MEOW-TOUCH(cursor): pointer mode requested by start().
 
   private:
     // Wayland objects
@@ -929,6 +930,10 @@ namespace kwin {
       if (screencast->init(true) < 0) {
         return -1;
       }
+      // MEOW-TOUCH(cursor): cursor as PipeWire metadata (drawn back in by the host) on a memory path.
+      meow_cursor_metadata = meow::cursor::metadata_mode_wanted(meow_cursor_memory_path);
+      screencast->pointer_mode = meow_cursor_metadata ? ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_METADATA : ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED;
+      BOOST_LOG(info) << "[kwingrab] Cursor: "sv << (meow_cursor_metadata ? "metadata (drawn by the host, position reported to clients)"sv : "embedded by the compositor"sv);
       if (screencast->start(display_name) < 0) {
         return -1;
       }

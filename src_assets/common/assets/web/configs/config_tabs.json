@@ -44,7 +44,8 @@
       "install_steam_audio_drivers": "enabled",
       "adapter_name": "",
       "output_name": "",
-      "meow_viewport_following": "disabled",
+      "meow_viewport_following": "enabled",
+      "meow_cursor_reporting": "enabled",
       "dd_configuration_option": "disabled",
       "dd_resolution_option": "auto",
       "dd_manual_resolution": "",
@@ -60,6 +61,7 @@
         "refresh_rate_only": []
       },
       "max_bitrate": 0,
+      "meow_adaptive_bitrate": "enabled",
       "adaptive_bitrate_min": 0,
       "adaptive_bitrate_max": 0,
       "minimum_fps_target": 0

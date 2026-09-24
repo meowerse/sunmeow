@@ -20,15 +20,16 @@ Cropping a phone-shaped 1920x1080 window out of that desktop fills the whole 128
 surface — and the source-pixels-per-encoded-pixel ratio improves by more than 4x. That
 number is asserted in `MeowViewportPlan.CroppingRecoversTheWastedSurface`.
 
-## Turning it on
+## Turning it on (and off)
 
-Add to `sunmeow.conf`:
+It is **on by default** (since 2026-09-24; see below for why it used to be off). A config file
+that never mentions the key gets it. To turn it off, add to `sunmeow.conf`:
 
 ```
-meow_viewport_following = enabled
+meow_viewport_following = disabled
 ```
 
-or tick **Follow the client's viewport** in the Web UI, under Audio/Video.
+or untick **Follow the client's viewport** in the Web UI, under Audio/Video.
 
 It is registered in `src/config.cpp` exactly like every other Sunshine setting, so it accepts
 the same values (`enabled`/`on`/`true`/`yes`/`1`, and the corresponding negatives) and
@@ -52,22 +53,32 @@ channel starts:
 Info: meow viewport following: enabled. The client may request a crop of the desktop; ...
 ```
 
-When it is off, **no handler is registered at all** — the feature is inert rather than
-merely quiet, and a viewport packet from a client that speaks the extension falls through to
-`control_server_t::call()`'s unknown-type path exactly as it would against stock Sunshine.
+When it is off the handler is still registered, and every request is answered **with the
+full desktop** and never applied. That answer is how the client learns it is talking to a
+sunmeow host: moonmeow always sends one full-frame probe at stream start and only turns on
+cursor following and receiver reports once an echo arrives. A client that never sends the
+packet sees no difference at all.
 
-## Why it defaults to off
+## Why it now defaults to on (it used to default to off)
 
-1. **Pointer input is not remapped yet.** Client-supplied absolute pointer and touch
-   coordinates go through `video::make_port()`, which knows only the *full* captured
-   desktop. While a crop is active, a tap lands in the wrong place. Turning cropping on is
-   therefore a trade — far more readable text in exchange for absolute pointer input that
-   needs the matching host-side remap. Relative mouse input is unaffected.
-2. **The compatibility floor.** An existing working setup must not change behaviour on
-   upgrade (CLAUDE.md §2). Nobody's stream changes until they ask for it.
-3. **It does not cover every scaling path** — see below. Software and CUDA/NVENC crop;
-   VA-API does not, so on those hosts the setting would advertise a feature that silently
-   does nothing.
+It defaulted to off for three reasons. Two of them are gone and the third is a limitation,
+not a hazard:
+
+1. **Absolute input used to land in the wrong place — the client now fixes that at the
+   source.** The host maps absolute pointer and touch coordinates through
+   `video::make_port()` against the *full* captured desktop. moonmeow (PR #16) now maps every
+   absolute coordinate — taps, absolute mouse, the local cursor — through its own logical view
+   into the **uncropped** reference frame before sending it. So the host's full-desktop
+   mapping is exactly right, and **the host must not remap absolute input**; it does not.
+2. **Double magnification is gone.** The echo now names the first frame carrying the crop
+   (`frame_index`, below), and the client swaps from its local zoom to the sharp crop on
+   exactly that decoded frame, so the picture is never magnified twice.
+3. **It still does not cover every scaling path.** Software and CUDA/NVENC crop; VA-API
+   does not. On a VA-API host the client's requests are simply never answered, it keeps its
+   local zoom, and nothing is lost.
+
+The owner's decision (2026-09-24) is that every meow feature is on by default, for fresh and
+existing installs alike, each with an explicit off switch.
 
 ## What is covered, and what is not
 
@@ -232,6 +243,32 @@ Three consequences worth knowing:
 
 ### The echo, and closing the gap permanently
 
+> **Echo v2 (2026-09-24).** The echo is no longer sent by the control thread when the request
+> arrives. The request is published for the encode thread, and the echo is produced on the
+> encode path **after the first frame planned from it has been encoded**
+> (`meow::viewport::on_frame_encoded()`), with flag bit 1 set and a `uint32 frame_index` at
+> offset 14 — the frame number that frame carries on the wire, which is exactly what the
+> client sees in `DECODE_UNIT.frameNumber` (`src/stream.cpp` writes `packet->frame_index()`
+> into `NV_VIDEO_PACKET.frameIndex`, and `VideoDepacketizer.c` copies that into the decode
+> unit; for FFmpeg sessions `frame_index()` is the packet's `pts`, which `encode_avcodec()`
+> sets to the same `frame_nr`). Bit 1 is always sent together with bit 0, because the frame
+> index sits at a fixed offset behind the desktop extent. A revocation (the host dropping a
+> crop on an encoder reinit) is echoed the same way.
+>
+> The control thread would otherwise sleep up to 150 ms in `enet_host_service()` before sending
+> the published echo - long enough to show the client's old mapping over the new crop - so it
+> polls every 8 ms while an echo is owed (`meow::viewport::echo_owed()`).
+>
+> Because KWin only delivers frames on damage, a pan on an idle desktop would otherwise never
+> reach the encoder. `encode_run()` keeps a reference to the last captured image and converts
+> it again - once per new request, never in the steady state - so the crop and its echo
+> arrive even when nothing on screen moves (`MeowViewportSession.EncodeHookHonoursAPanOnAnIdleDesktop`).
+> The client's start-of-stream probe can arrive before the session's encoder has
+> initialised - before any scaler exists, or while the host's startup encoder probing has left
+> a stale one. The session's last request is therefore kept and re-evaluated by every scaler
+> init (`ARequestBeforeTheScalerIsHeldForIt`, `AProbeAgainstStaleGeometryIsAnsweredByTheSessionsScaler`),
+> which also carries a crop across an encoder reinit instead of dropping it.
+
 The echo is **load-bearing, not informational**. Without it a host that crops leaves the
 client showing the crop under its own local zoom — magnified twice, with absolute pointer
 coordinates addressing the crop instead of the desktop. The echo is what lets the client
@@ -248,6 +285,7 @@ and appends the captured desktop size:
 | 2..9 | | applied rectangle, reference-frame pixels |
 | 10 | `uint16` | captured desktop width |
 | 12 | `uint16` | captured desktop height |
+| 14 | `uint32` | frame index (flag bit 1, echo v2 — always sent now) |
 
 With the negotiated stream resolution (which the client already has) plus the desktop size,
 the client can compute the host's `min()` scalar and padding offsets itself — which closes
@@ -296,9 +334,16 @@ All of it is pure and unit tested in `src/meow/viewport.h`:
    refused — a user pinching in hard should hit a limit, not lose their zoom.
 5. **Even-align.** Every cropped coordinate is even. NV12 chroma is subsampled 2x2; an odd
    origin fringes the crop edge and an odd destination offset fringes the letterbox seam.
-6. **Scale and place.** `scalar = min(surface_w / src_w, surface_h / src_h)`, centred — the
+6. **Fill the surface (since 2026-09-24).** A crop whose aspect ratio differs from the encode
+   surface is grown on its short side, centred and shifted back inside the desktop, to the
+   surface's aspect ratio (`fit_surface_aspect()`). Letterbox bars are encoded bits spent on
+   black; growing the crop spends them on real desktop around the view instead, which is the
+   context a small pan needs to be sharp immediately. The client's own guard band (it sends its
+   view expanded by a margin that depends on pan velocity) is honoured as sent; this only adds
+   what would otherwise be letterbox, and the echo reports the grown rectangle.
+7. **Scale and place.** `scalar = min(surface_w / src_w, surface_h / src_h)`, centred — the
    same arithmetic upstream applies to the full frame.
-7. **Refuse slivers.** If the scaled result would be under 32 px on an axis, the full desktop
+8. **Refuse slivers.** If the scaled result would be under 32 px on an axis, the full desktop
    is streamed instead. This is the "aspect ratio wildly different from the encode surface"
    guard: a 5360x64 request scales to 1280x15, which is valid and useless.
 
@@ -310,18 +355,21 @@ client that never sends the packet gets an unchanged stream.
 
 ## When there is no echo
 
-The host answers **including when what it applied was the full desktop**, so the client can
-tell "refused" apart from "lost in transit". The only case with no echo at all is a session
-that never published any scaler geometry — one that runs through neither the software nor the
-CUDA scaling path — where the host does not know the captured desktop size and therefore
-cannot even name the coordinate system an answer would be in.
+The host answers **including when what it applied was the full desktop**, and including when
+cropping is switched off, so the client can tell "refused" apart from "lost in transit". The
+only case with no echo at all is a session that never publishes any scaler geometry — one that
+runs through neither the software nor the CUDA scaling path (VA-API) — where the host does not
+know the captured desktop size and therefore cannot even name the coordinate system an answer
+would be in.
 
 ## Resetting
 
 A stale crop cannot leak forward:
 
-- `on_scaler_init()` clears the pending rectangle, so a new session, a display mode change
-  or an encoder reinit all start uncropped;
+- a new session forgets the previous client's request when it is created
+  (`meow::control::session_state_t`), so it starts uncropped; within a session, a display
+  mode change or an encoder reinit re-applies the client's last request against the new
+  scaler and echoes it again, and a crop with no request behind it is revoked (and echoed);
 - `reset()` runs when the control broadcast ends;
 - the owning-scaler check means a scaler only ever acts on state it published itself;
 - with no rectangle pending, the owner's plan **is** the full-frame plan, so a scaler that
@@ -330,8 +378,9 @@ A stale crop cannot leak forward:
 On a host whose encoder takes neither the software nor the CUDA scaling path,
 `on_scaler_init()` is never called, nothing ever claims the state, and the host correctly
 stays silent rather than echoing a crop it did not apply. On the CUDA path `on_scaler_init()`
-is called from `cuda_t::meow_viewport_init()`, and only when the setting is enabled — so a
-host that never opted in allocates nothing and answers nothing. The one residual gap is a
+is called from `cuda_t::meow_viewport_init()` unconditionally (since 2026-09-24), like the
+software path: the geometry is needed to answer requests with the full frame when cropping is
+off, and to map cursor positions. The one residual gap is a
 broadcast that runs a session on one of those paths and then a session on neither *without*
 the broadcast restarting: the second session would be answered against the first's geometry.
 That needs the encoder choice to change mid-broadcast, which it cannot — it is fixed by host
@@ -339,6 +388,15 @@ config and probed once — so it is recorded here rather than defended against w
 on the hot path.
 
 ## Cost per frame
+
+**The CUDA memory path uploads only what a crop reads (2026-09-24).** `cuda_ram_t` copies the
+captured frame to the GPU on every frame - 30.9 MB for the 5360x1440 desktop. With a crop
+active only the cropped span plus a two-texel sampling margin is copied
+(`meow::viewport::cuda_upload_rect()`, `sws_t::load_ram_region()`); the texels land at their own
+coordinates, so the kernels are unchanged and never sample the stale remainder. Measured with
+`tools/meow/cuda_upload_probe.cu` on the RTX 5050: full frame 3.0-4.6 ms, a 16:9 crop of one
+monitor 1.2-1.4 ms, a 2x phone zoom 0.6 ms per frame.
+
 
 In the steady state, one relaxed atomic load, roughly a dozen integer operations and six
 integer comparisons — measured at well under 1 us/call by

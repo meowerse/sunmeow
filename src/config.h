@@ -138,6 +138,7 @@ namespace config {
     std::string adapter_name;  ///< Display adapter name selected in configuration.
     std::string output_name;  ///< Display output name selected in configuration.
     bool viewport_following;  ///< MEOW-TOUCH(viewport): honour client viewport crop requests. @see src/meow/viewport.h
+    bool cursor_reporting;  ///< MEOW-TOUCH(cursor): report the host cursor to subscribed clients. @see src/meow/cursor.h
 
     /**
      * @brief Display-device integration settings.
@@ -219,9 +220,10 @@ namespace config {
     } dd;  ///< Display-device integration settings.
 
     int max_bitrate;  ///< Maximum bitrate ceiling in kbps for bitrate requested from the client.
-    // MEOW-TOUCH(adaptive-bitrate): bounds for the runtime bitrate controller in src/meow/adaptive_bitrate.h.
-    int adaptive_bitrate_min;  ///< Lowest kbps adaptive bitrate may fall to. 0 disables adaptation entirely.
-    int adaptive_bitrate_max;  ///< Highest kbps adaptive bitrate may rise to. 0 means "use the effective ceiling".
+    // MEOW-TOUCH(adaptive-bitrate): switch and bounds for the runtime bitrate controller in src/meow/adaptive_bitrate.h.
+    bool adaptive_bitrate;  ///< Whether the encoder bitrate follows the network path (on by default).
+    int adaptive_bitrate_min;  ///< Lowest kbps adaptive bitrate may fall to. 0 means automatic: max(1000, 25% of negotiated).
+    int adaptive_bitrate_max;  ///< Highest kbps adaptive bitrate may rise to. 0 means automatic (client ceiling, else negotiated).
     double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
   };
 

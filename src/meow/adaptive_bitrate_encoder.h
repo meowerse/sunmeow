@@ -4,51 +4,41 @@
  *
  * Kept separate from `adaptive_bitrate.h` so that the control logic stays free of FFmpeg,
  * Boost and Sunshine headers and can be unit tested on a machine with no GPU (CLAUDE.md
- * §5.5). Everything here is plumbing: drain the sample queue, advance the controller, write
- * the answer onto the codec context, log it. There are no decisions in this file.
+ * §5.5). Everything here is plumbing: drain the sample queues, advance the controller, write
+ * the answer onto the codec context, tell the control thread, log it. There are no decisions
+ * in this file.
  *
  * ## Which encoders can actually do this, and how we know
  *
- * Measured on this codebase's bundled FFmpeg (libavcodec 62.28.102, RTX 5050) with a probe
- * that opens an encoder with Sunshine's own options (`preset p1`, `tune ull`, `rc cbr`,
- * `zerolatency`, `surfaces 1`, `delay 0`) at 1280x720@60, encodes 180 frames at 8 Mbps,
- * mutates `bit_rate`/`rc_max_rate`/`rc_min_rate`/`rc_buffer_size` on the live context,
- * encodes 180 more, then restores them. Measured per 30-frame window so the steady state is
- * unambiguous rather than averaged across the transition:
+ * Measured 2026-09-24 with `tools/meow/live_bitrate_probe.cpp` on this codebase's bundled
+ * FFmpeg (RTX 5050; Radeon 760M via Mesa radeonsi for VA-API): it opens an encoder with the
+ * rate-control fields `video.cpp` sets, encodes 1280x720@60 desktop-like content with a busy
+ * window, lowers the live context from 8 to 3 Mbps at frame 180 and raises it back at 360.
+ * Produced rate per 30-frame window (steady state of each phase):
  *
  * ```
- * --- h264_nvenc ---            --- libx264 ---
- *   f  0- 29  8.000 Mbps IDR=1    f  0- 29  8.000 Mbps IDR=1
- *   f180-209  3.000 Mbps IDR=1    f180-209  8.000 Mbps IDR=0   <- lowered here
- *   f360-389  8.000 Mbps IDR=1    f360-389  8.000 Mbps IDR=0   <- raised here
- *   total IDRs: 3 / 540 frames    total IDRs: 1 / 540 frames
+ *               8 Mbps phase     3 Mbps phase     8 Mbps again     IDRs
+ *   h264_nvenc  8.000            3.000            8.000            3 / 540 (one per change)
+ *   libx264     2.9 - 3.2        1.6 - 1.8        3.0 - 3.5        1 / 540 (none per change)
+ *   h264_vaapi  8.006            8.006            8.006            1 / 540 (change ignored)
+ *   libx265     1.6 - 1.7        1.6 - 1.7        1.6 - 1.7        1 / 540 (change ignored)
  * ```
  *
- * nvenc tracks the request exactly and converges inside the same 0.5 s window; libx264
- * ignores the mutation entirely and reports no error.
+ * NVENC tracks the request exactly. libx264 (quality-limited by `superfast`/`zerolatency`
+ * with a one-frame VBV, so it never reaches its target) nonetheless moves with it in both
+ * directions through `x264_encoder_reconfig()`, without a keyframe - an earlier revision of
+ * this file recorded it as ignoring the change, which the measurement above contradicts.
+ * VA-API (`vaapi_encode.c` has no reconfigure path) and libx265 ignore it entirely, and
+ * report success. QSV and AMF were not measurable on this host and are treated as
+ * unsupported. The conclusion is encoded in `encoder_supports_live_bitrate()`.
  *
- * An earlier revision of this comment recorded "20.0 -> 10.2 -> 20.0 Mbps" for a 20 -> 2 Mbps
- * request and called it honoured. That measurement was taken on synthetic incompressible
- * noise, where the encoder is quality-floored rather than rate-limited, so it said nothing
- * about rate tracking. The numbers above use compressible desktop-like content, which is what
- * this feature actually encodes.
- *
- * The mechanism is `reconfig_encoder()` in `libavcodec/nvenc.c`, which FFmpeg calls from
- * `nvenc_send_frame()` on every frame. It compares `avctx->bit_rate`, `avctx->rc_max_rate`
- * and `avctx->rc_buffer_size` against the values the session was opened with and, on any
- * difference, calls `nvEncReconfigureEncoder()`. It is gated on
- * `NV_ENC_CAPS_SUPPORT_DYN_BITRATE_CHANGE` and on the rate control not being ConstQP;
- * Sunshine opens NVENC with `rc = cbr`, so the gate is satisfied.
- *
- * FFmpeg sets `params.resetEncoder = 1` and `params.forceIDR = 1` for that call, so **every
- * change costs exactly one IDR frame** — no encoder teardown, no display reinit, no dropped
- * frames. That IDR is not even a bandwidth spike: because Sunshine opens NVENC as CBR with a
- * one-frame VBV, the probe above measured the forced IDR at 6255 bytes against neighbours of
- * 6250. That is why this feature reuses the live context instead of the `reinit` seam in
- * `video.cpp`: the reinit path rebuilds the capture pipeline and the encoder session, which
- * is visible, whereas an IDR is something Sunshine already emits on demand whenever a client
- * asks for one (`IDX_REQUEST_IDR_FRAME`) — which is precisely what a lossy link makes it do
- * anyway.
+ * The NVENC mechanism is `reconfig_encoder()` in `libavcodec/nvenc.c`, which FFmpeg calls
+ * from `nvenc_send_frame()` on every frame. It compares `avctx->bit_rate`,
+ * `avctx->rc_max_rate` and `avctx->rc_buffer_size` against the values the session was opened
+ * with and, on any difference, calls `nvEncReconfigureEncoder()` with `resetEncoder = 1` and
+ * `forceIDR = 1` - so **every change costs exactly one IDR frame**, with no encoder teardown,
+ * no display reinit and no dropped frames. Because Sunshine opens NVENC as CBR with a
+ * one-frame VBV, that IDR is not even a bandwidth spike.
  *
  * Encoders that ignore the mutation are not adapted at all, and say so once at info level,
  * because silently doing nothing is the failure mode most likely to waste a user's evening.
@@ -82,22 +72,30 @@ namespace meow::adaptive_bitrate {
    * @brief Whether an FFmpeg encoder honours a live `bit_rate` mutation.
    *
    * Allow-listed rather than attempted-and-checked because FFmpeg gives no way to ask: an
-   * encoder that ignores the change reports success and simply keeps its old rate. The list
-   * is short on purpose — an encoder is added to it only after the probe described in this
-   * file's header has been run against it.
+   * encoder that ignores the change reports success and simply keeps its old rate. An encoder
+   * is added here only after `tools/meow/live_bitrate_probe.cpp` has measured it.
    *
    * @param codec_name FFmpeg encoder name, e.g. `h264_nvenc`.
    * @return True when mutating the live context is known to take effect.
    */
   [[nodiscard]] inline bool encoder_supports_live_bitrate(const std::string_view codec_name) {
-    return codec_name.find("nvenc") != std::string_view::npos;
+    return codec_name.find("nvenc") != std::string_view::npos || codec_name == "libx264";
+  }
+
+  /**
+   * @brief The one line logged when an encoder cannot change its bitrate at runtime.
+   *
+   * Returned rather than logged so the wording is testable.
+   *
+   * @param codec_name FFmpeg encoder name.
+   * @return The line.
+   */
+  [[nodiscard]] inline std::string unsupported_encoder_note(const std::string_view codec_name) {
+    return std::string("Adaptive bitrate: unavailable - encoder '").append(codec_name).append("' does not apply a bitrate change while running (measured: NVENC and libx264 do in this FFmpeg build; VA-API and libx265 do not); the stream keeps its negotiated bitrate");
   }
 
   /**
    * @brief Read the bitrate remembered from a previous encoder session, if any.
-   *
-   * `view()` returns an empty optional when the event has never been raised or has been
-   * stopped, so the result is checked rather than dereferenced blind.
    *
    * @param resume Event channel holding the last applied bitrate, possibly null.
    * @return The remembered bitrate in kbps, or 0 when there is none.
@@ -111,6 +109,18 @@ namespace meow::adaptive_bitrate {
   }
 
   /**
+   * @brief Session-level inputs the governor needs, gathered by the caller.
+   */
+  struct governor_config_t {
+    bool enabled = true;  ///< `meow_adaptive_bitrate`.
+    int cfg_min = 0;  ///< `adaptive_bitrate_min`, 0 = automatic.
+    int cfg_max = 0;  ///< `adaptive_bitrate_max`, 0 = automatic.
+    int negotiated_kbps = 0;  ///< Bitrate the client asked for over RTSP.
+    int host_max_kbps = 0;  ///< `max_bitrate`, 0 = unlimited.
+    int fec_percentage = 20;  ///< FEC overhead included in the client's goodput.
+  };
+
+  /**
    * @brief Applies the controller's decisions to a live `AVCodecContext`.
    *
    * Owned by the encode session, so its lifetime is exactly the lifetime of the encoder it
@@ -119,60 +129,53 @@ namespace meow::adaptive_bitrate {
   class governor_t {
   public:
     /**
+     * @brief Clock the governor reads; injectable so a test can drive it.
+     */
+    using clock_fn = std::chrono::steady_clock::time_point (*)();
+
+    /**
      * @brief Construct a governor for one encode session.
      *
-     * @param mail Session mailbox carrying loss samples from the control thread.
+     * @param mail Session mailbox carrying samples from the control thread.
      * @param ctx Live codec context, or `nullptr` for a non-FFmpeg encode session.
      * @param codec_name FFmpeg encoder name used to open `ctx`.
-     * @param client_kbps Bitrate the client requested over RTSP.
-     * @param host_max_kbps Existing `max_bitrate` setting, in kbps; zero means unlimited.
-     * @param cfg_min Configured `adaptive_bitrate_min`, in kbps.
-     * @param cfg_max Configured `adaptive_bitrate_max`, in kbps.
+     * @param config Session-level configuration.
+     * @param now Clock; defaults to `std::chrono::steady_clock::now`.
+     * @param tuning Controller tuning; defaults are the shipping values.
      */
-    governor_t(
-      safe::mail_t mail,
-      AVCodecContext *ctx,
-      const std::string_view codec_name,
-      const int client_kbps,
-      const int host_max_kbps,
-      const int cfg_min,
-      const int cfg_max
-    ):
+    governor_t(safe::mail_t mail, AVCodecContext *ctx, const std::string_view codec_name, const governor_config_t &config, const clock_fn now = &std::chrono::steady_clock::now, tuning_t tuning = {}):
         ctx_ {ctx},
-        bounds_ {resolve_bounds(cfg_min, cfg_max, client_kbps, host_max_kbps)},
+        config_ {config},
+        now_ {now},
         mail_ {std::move(mail)},
         resume_ {mail_ ? mail_->event<int>(resume_mail_id) : nullptr},
-        controller_ {bounds_, std::chrono::steady_clock::now(), tuning_t {}, remembered_kbps(resume_)} {
-      if (cfg_min <= 0) {
-        // Not configured. Say nothing: this is the default and the overwhelmingly common case.
+        controller_ {resolve_bounds(config.enabled, config.cfg_min, config.cfg_max, config.negotiated_kbps, config.host_max_kbps), now_(), with_fec(tuning, config.fec_percentage), config.negotiated_kbps, remembered_kbps(resume_)} {
+      if (!config_.enabled) {
+        BOOST_LOG(info) << "Adaptive bitrate: disabled (meow_adaptive_bitrate = disabled)"sv;
+        ctx_ = nullptr;
         return;
       }
 
       if (!controller_.enabled()) {
         BOOST_LOG(info)
-          << "Adaptive bitrate: disabled for this session - the configured range ["sv << cfg_min << ", "sv << cfg_max
-          << "] kbps leaves nothing to adapt between once the client's requested "sv << client_kbps
-          << " kbps and max_bitrate are applied"sv;
-        return;
-      }
-
-      if (!ctx_) {
-        BOOST_LOG(info) << "Adaptive bitrate: disabled - this encode session is not an FFmpeg session"sv;
-        return;
-      }
-
-      if (!encoder_supports_live_bitrate(codec_name)) {
-        BOOST_LOG(info)
-          << "Adaptive bitrate: disabled - encoder '"sv << codec_name
-          << "' ignores a runtime bitrate change (only NVENC implements it in FFmpeg)"sv;
+          << "Adaptive bitrate: disabled for this session - no range left to adapt in once the negotiated "sv << config_.negotiated_kbps
+          << " kbps, max_bitrate and adaptive_bitrate_min/max are applied"sv;
         ctx_ = nullptr;
         return;
       }
 
-      // Preserve, rather than re-derive, the rate-control shape upstream established at
-      // init: whether min == max (CBR) or bit_rate == max - 1 (VBR forced), and how large
-      // the VBV buffer is relative to the bitrate. Re-deriving would silently discard the
-      // nvenc `vbv_percentage_increase` setting.
+      if (!ctx_) {
+        BOOST_LOG(info) << "Adaptive bitrate: unavailable - this encode session is not an FFmpeg session"sv;
+        return;
+      }
+
+      if (!encoder_supports_live_bitrate(codec_name)) {
+        BOOST_LOG(info) << unsupported_encoder_note(codec_name);
+        ctx_ = nullptr;
+        return;
+      }
+
+      // Preserve, rather than re-derive, the rate-control shape upstream established at init.
       const auto opened_at = ctx_->rc_max_rate > 0 ? ctx_->rc_max_rate : ctx_->bit_rate;
       if (opened_at <= 0) {
         BOOST_LOG(warning) << "Adaptive bitrate: disabled - the encoder opened with no rate limit to scale"sv;
@@ -181,40 +184,56 @@ namespace meow::adaptive_bitrate {
       }
       shape_ = rate_shape_t::capture(ctx_->bit_rate, ctx_->rc_max_rate, ctx_->rc_min_rate, ctx_->rc_buffer_size);
 
-      samples_ = mail_ ? mail_->queue<loss_sample_t>(mail_id) : nullptr;
+      if (mail_) {
+        samples_ = mail_->queue<loss_sample_t>(mail_id);
+        reports_ = mail_->queue<receiver_report_t>(report_mail_id);
+        rtts_ = mail_->queue<rtt_sample_t>(rtt_mail_id);
+        applied_ = mail_->event<int>(applied_mail_id);
+      }
       enabled_ = true;
 
+      const auto &bounds = controller_.bounds();
       BOOST_LOG(info)
-        << "Adaptive bitrate: enabled, adapting between "sv << bounds_.min_kbps << " and "sv << bounds_.max_kbps
+        << "Adaptive bitrate: enabled, adapting between "sv << bounds.min_kbps << " and "sv << bounds.max_kbps
         << " kbps, starting at "sv << controller_.current_kbps() << " kbps"sv;
 
-      // Upstream opens the encoder at min(client_requested, max_bitrate), which does not know
-      // about `adaptive_bitrate_max`. When that is the binding limit the session would
-      // otherwise run above its configured ceiling forever, because a clean link never
-      // produces a decision to bring it down. Reconcile once, here, so the ceiling is real
-      // from the first frame rather than only after the first back-off.
-      const auto ceiling_bits = static_cast<std::int64_t>(bounds_.max_kbps) * 1000;
-      if (opened_at != ceiling_bits) {
-        apply(bounds_.max_kbps);
-        if (resume_) {
-          resume_->raise(bounds_.max_kbps);
-        }
-        BOOST_LOG(info)
-          << "Adaptive bitrate: clamped opening bitrate "sv << (opened_at / 1000) << " -> "sv
-          << bounds_.max_kbps << " kbps (adaptive_bitrate_max)"sv;
+      // Upstream opens the encoder at min(client_requested, max_bitrate), which knows nothing
+      // about `adaptive_bitrate_max` or a remembered rate. Reconcile once, here, so the
+      // opening rate is the controller's from the first frame.
+      if (opened_at != static_cast<std::int64_t>(controller_.current_kbps()) * 1000) {
+        const auto opened_kbps = static_cast<int>(opened_at / 1000);
+        publish(controller_.current_kbps());
+        BOOST_LOG(info) << "Adaptive bitrate: opening bitrate "sv << opened_kbps << " -> "sv << controller_.current_kbps() << " kbps"sv;
       }
     }
 
     /**
-     * @brief Drain pending loss samples, advance the controller, apply any change.
+     * @brief Whether this governor will ever change anything.
+     * @return True when adapting.
+     */
+    [[nodiscard]] bool enabled() const {
+      return enabled_;
+    }
+
+    /**
+     * @brief The bitrate currently in force, in kbps.
+     * @return The controller's current rate, or 0 when not adapting.
+     */
+    [[nodiscard]] int current_kbps() const {
+      return enabled_ ? controller_.current_kbps() : 0;
+    }
+
+    /**
+     * @brief Drain pending samples, advance the controller, apply any change.
      *
-     * Cheap enough to call once per encoded frame: it does nothing until a full evaluation
-     * window has elapsed.
+     * Cheap enough to call once per encoded frame: each queue check is one `peek()`, and the
+     * controller does nothing until a full evaluation window has elapsed.
      */
     void tick() {
       if (!enabled_) {
         return;
       }
+      const auto now = now_();
 
       if (samples_) {
         while (samples_->peek()) {
@@ -225,29 +244,107 @@ namespace meow::adaptive_bitrate {
           }
         }
       }
-
-      const auto decision = controller_.tick(std::chrono::steady_clock::now());
-      if (!decision.changed) {
-        return;
+      if (rtts_) {
+        while (rtts_->peek()) {
+          if (const auto sample = rtts_->pop(std::chrono::milliseconds {0})) {
+            controller_.observe(*sample);
+          } else {
+            break;
+          }
+        }
+      }
+      bool acknowledge = false;
+      if (reports_) {
+        while (reports_->peek()) {
+          const auto report = reports_->pop(std::chrono::milliseconds {0});
+          if (!report) {
+            break;
+          }
+          controller_.observe(*report);
+          if (!first_report_seen_) {
+            first_report_seen_ = true;
+            acknowledge = true;
+          }
+          // Only a client that runs automatic bitrate may raise the ceiling above what it
+          // negotiated; a user who fixed their bitrate keeps it as the ceiling.
+          const auto client_max = report->auto_bitrate ? static_cast<int>(std::min<std::uint32_t>(report->max_kbps, max_configurable_kbps)) : 0;
+          if (client_max != client_max_kbps_) {
+            client_max_kbps_ = client_max;
+            const auto bounds = resolve_bounds(config_.enabled, config_.cfg_min, config_.cfg_max, config_.negotiated_kbps, config_.host_max_kbps, client_max_kbps_);
+            if (bounds.enabled() && bounds != controller_.bounds()) {
+              BOOST_LOG(info) << "Adaptive bitrate: client ceiling "sv << client_max_kbps_ << " kbps, now adapting between "sv << bounds.min_kbps << " and "sv << bounds.max_kbps << " kbps"sv;
+              const auto clamp = controller_.set_bounds(bounds, now);
+              if (clamp.changed) {
+                publish(clamp.kbps);
+                log(clamp);
+                acknowledge = false;
+              }
+            }
+          }
+        }
       }
 
-      apply(decision.kbps);
-      if (resume_) {
-        resume_->raise(decision.kbps);
+      const auto decision = controller_.tick(now);
+      if (decision.rebaselined) {
+        BOOST_LOG(info) << "Adaptive bitrate: round-trip time settled at "sv << decision.baseline_ms << " ms with no loss - treating it as a new network path"sv;
       }
-
-      BOOST_LOG(info)
-        << "Adaptive bitrate: "sv << decision.previous_kbps << " -> "sv << decision.kbps
-        << " kbps ("sv << describe(decision.reason) << ", "sv
-        << static_cast<int>(decision.observed_damaged * 1000.0 + 0.5) / 10.0 << "% of frames damaged)"sv;
+      if (decision.changed) {
+        publish(decision.kbps);
+        log(decision);
+      } else if (acknowledge && applied_) {
+        // The client gives up on receiver reports after a few with no APPLIED, so the first
+        // one is answered even when nothing changed.
+        applied_->raise(controller_.current_kbps());
+      }
     }
 
   private:
+    /**
+     * @brief Copy the FEC share into the tuning the controller uses.
+     * @param tuning Tuning to adjust.
+     * @param fec_percentage Configured FEC percentage.
+     * @return The adjusted tuning.
+     */
+    [[nodiscard]] static tuning_t with_fec(tuning_t tuning, const int fec_percentage) {
+      tuning.fec_percentage = std::clamp(fec_percentage, 0, 255);
+      return tuning;
+    }
+
+    /**
+     * @brief Apply a bitrate to the codec, remember it across reinits and announce it.
+     * @param kbps New bitrate in kbps.
+     */
+    void publish(const int kbps) {
+      apply(kbps);
+      if (resume_) {
+        resume_->raise(kbps);
+      }
+      if (applied_) {
+        applied_->raise(kbps);
+      }
+    }
+
+    /**
+     * @brief Log one change.
+     * @param decision The change.
+     */
+    static void log(const decision_t &decision) {
+      BOOST_LOG(info)
+        << "Adaptive bitrate: "sv << decision.previous_kbps << " -> "sv << decision.kbps
+        << " kbps ("sv << describe(decision.reason) << "; "sv
+        << static_cast<int>(decision.observed_damaged * 1000.0 + 0.5) / 10.0 << "% of frames damaged, loss "sv
+        << decision.observed_loss_permille << "‰, queueing "sv << decision.queueing_ms << " ms over a "sv
+        << decision.baseline_ms << " ms baseline)"sv;
+    }
+
     /**
      * @brief Write a new bitrate onto the live codec context.
      * @param kbps New bitrate in kbps.
      */
     void apply(const int kbps) {
+      if (!ctx_) {
+        return;
+      }
       const auto rates = rates_for(shape_, kbps);
       ctx_->rc_max_rate = rates.rc_max_rate;
       ctx_->bit_rate = rates.bit_rate;
@@ -260,13 +357,19 @@ namespace meow::adaptive_bitrate {
     }
 
     AVCodecContext *ctx_ = nullptr;  ///< Live codec context, or null when not adapting.
-    bounds_t bounds_;  ///< Resolved bounds for this session.
+    governor_config_t config_;  ///< Session-level configuration.
+    clock_fn now_;  ///< Clock.
     safe::mail_t mail_;  ///< Session mailbox.
     safe::mail_raw_t::event_t<int> resume_;  ///< Bitrate carried across encoder reinits.
     controller_t controller_;  ///< The pure control logic.
-    safe::mail_raw_t::queue_t<loss_sample_t> samples_;  ///< Loss samples from the control thread.
+    safe::mail_raw_t::queue_t<loss_sample_t> samples_;  ///< FEC loss samples from the control thread.
+    safe::mail_raw_t::queue_t<receiver_report_t> reports_;  ///< Receiver reports from the control thread.
+    safe::mail_raw_t::queue_t<rtt_sample_t> rtts_;  ///< Host RTT samples from the control thread.
+    safe::mail_raw_t::event_t<int> applied_;  ///< Applied bitrate, sent to the client by the control thread.
 
     bool enabled_ = false;  ///< Whether this governor will ever change anything.
+    bool first_report_seen_ = false;  ///< Whether the first receiver report has been answered.
+    int client_max_kbps_ = 0;  ///< Last client ceiling seen.
     rate_shape_t shape_;  ///< Rate-control shape captured at encoder init.
   };
 

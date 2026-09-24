@@ -1132,21 +1132,52 @@ supported on the current platform.
             encoder. On a wide multi-monitor desktop streamed to a phone, the whole desktop is letterboxed into the
             encode surface and text is destroyed before the encoder sees it; cropping to the region the user has
             zoomed into spends the same bitrate on far fewer pixels.
+            <br><br>
+            The host tells the client which rectangle it applied and the first video frame that carries it, so the
+            client swaps from its local zoom to the sharp crop on exactly that frame. The client maps taps and the
+            mouse into the uncropped desktop itself, so absolute input lands where the user sees it.
             @note{The client must support the viewport control message. A client that never sends one streams the
-            full desktop exactly as before.}
-            @warning{While a crop is active, absolute pointer and touch coordinates are not remapped and will land in
-            the wrong place. The software and CUDA/NVENC scaling paths apply the crop; VA-API is unaffected.
-            See the sunmeow documentation for details.}
+            full desktop exactly as before. With this disabled, viewport requests are still answered - with the full
+            desktop - so the client can tell it is talking to a sunmeow host. The software and CUDA/NVENC scaling
+            paths apply the crop; VA-API streams the full desktop.}
         </td>
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}disabled@endcode</td>
+        <td colspan="2">@code{}enabled@endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            meow_viewport_following = enabled
+            meow_viewport_following = disabled
+            @endcode</td>
+    </tr>
+</table>
+
+### meow_cursor_reporting
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Send the host mouse position to clients that ask for it, so a zoomed-in client view can follow the cursor.
+            Positions are sent over the existing control stream, at most 60 times a second, and only to clients that
+            subscribed.
+            <br><br>
+            On KDE Plasma with KWin capture, when frames arrive through system memory (for example NVENC on a hybrid
+            laptop whose desktop runs on the integrated GPU), KWin is asked to send the cursor as metadata and sunmeow
+            draws it back into the stream itself. Where frames arrive as DMA-BUFs, or the negotiated pixel format cannot
+            be drawn into, the cursor stays drawn by the compositor and no position is sent.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}enabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            meow_cursor_reporting = disabled
             @endcode</td>
     </tr>
 </table>
@@ -1529,38 +1560,53 @@ supported on the current platform.
     </tr>
 </table>
 
+### meow_adaptive_bitrate
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Adapt the encoder bitrate to the network path while streaming. Sunmeow watches the per-frame FEC reports
+            every Moonlight client sends, the round-trip time of the control connection, and - from Moonmeow - a
+            once-a-second receiver report with goodput, packet loss, round-trip time and decoder load.
+            <br><br>
+            It backs off (to 75%) when loss hurts for two seconds - frames forward error correction could not rebuild,
+            loss beyond what FEC can carry, or loss while the round-trip time is up - and <em>before</em> any loss when
+            the round-trip time keeps rising above its baseline (to 85%). Random Wi-Fi or cellular loss that FEC repairs
+            is not a reason to back off. When the link is saturated - losing packets with the round-trip time up - it
+            also caps the new bitrate at what actually arrived. When the link is clean it probes back up by
+            about 8% per second, at most 25% per change, staying just below the rate that last congested for 30 seconds.
+            The round-trip baseline is a minimum over the last 20 seconds and moves to a new path after a sustained step
+            with no loss, so a Tailscale switch between a direct and a relayed path never pins the stream low.
+            <br><br>
+            @note{Only NVENC and the libx264 software encoder apply a bitrate change to a running encoder (measured;
+            VA-API and libx265 ignore it). On any other encoder the bitrate stays at what the client negotiated and the
+            log says so once. On NVENC each change costs one keyframe, so changes are at least 3 seconds apart and at
+            least 200 Kbps.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}enabled@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            meow_adaptive_bitrate = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### adaptive_bitrate_min
 
 <table>
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The lowest bitrate (in Kbps) that adaptive bitrate may fall back to when the network is losing packets.
-            Setting this to a non-zero value is what turns adaptive bitrate on; it is off by default, so an existing
-            installation behaves exactly as before until you opt in.
-            <br><br>
-            When enabled, Sunshine watches the per-frame loss reports the client already sends and moves the encoder
-            bitrate inside <code>[adaptive_bitrate_min, effective ceiling]</code>. The effective ceiling is the
-            smallest of the bitrate Moonlight requested, [max_bitrate](#max_bitrate), and [adaptive_bitrate_max](#adaptive_bitrate_max) — adaptive
-            bitrate never raises a stream above what the client asked for.
-            <br><br>
-            If Moonlight requests <em>less</em> than this minimum, the client's request wins: the range collapses,
-            adaptive bitrate disables itself for that session and logs that it did so. The minimum can never be used
-            to push a stream above the client's request.
-            <br><br>
-            Values below 500 are clamped to 500 with a warning, and a minimum that is not below
-            [adaptive_bitrate_max](#adaptive_bitrate_max) disables the feature with a warning rather than being silently reinterpreted.
-            <br><br>
-            Sunshine measures the fraction of encoded frames the client reports as damaged, not the packet loss
-            inside those frames — the client only reports damaged frames, so the latter reads several percent for a
-            single lost packet and would back off on a perfectly ordinary link. It backs off when 15% or more of
-            frames are damaged for two seconds running, and climbs back when 2% or fewer are damaged for ten seconds
-            running with no unrecoverable frames. Between those two figures the bitrate holds still.
-            <br><br>
-            @note{Only NVENC applies a bitrate change to a running encoder. On any other encoder Sunshine logs that
-            adaptive bitrate is unavailable and leaves the bitrate fixed. Each change costs one keyframe, so changes
-            are deliberately rare: damage must persist for several seconds before Sunshine backs off, and the link
-            must stay clean for substantially longer before it climbs back.}
+            The lowest bitrate (in Kbps) that [meow_adaptive_bitrate](#meow_adaptive_bitrate) may fall back to. The
+            default of 0 means automatic: the larger of 1000 Kbps and a quarter of the bitrate the client negotiated.
+            Values below 500 are clamped to 500 with a warning. The minimum is never above the ceiling; if the client
+            negotiates less than it, there is nothing to adapt and the stream keeps its fixed bitrate.
         </td>
     </tr>
     <tr>
@@ -1583,12 +1629,11 @@ supported on the current platform.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            The highest bitrate (in Kbps) that adaptive bitrate may climb to. A value of 0 means "use the effective
-            ceiling", i.e. the smaller of the bitrate Moonlight requested and [max_bitrate](#max_bitrate).
-            <br><br>
-            This has no effect on its own — without [adaptive_bitrate_min](#adaptive_bitrate_min) the feature stays off, and Sunshine
-            logs a warning saying so. It is also never able to raise a stream: the client's requested bitrate and
-            [max_bitrate](#max_bitrate) both still apply as hard limits.
+            The highest bitrate (in Kbps) that [meow_adaptive_bitrate](#meow_adaptive_bitrate) may climb to. The default
+            of 0 means automatic: the maximum bitrate Moonmeow reports its user allows, when that is above the bitrate it
+            negotiated (it negotiates a remembered starting rate), and otherwise the negotiated bitrate.
+            [max_bitrate](#max_bitrate) always still applies. A maximum that is not above
+            [adaptive_bitrate_min](#adaptive_bitrate_min) is ignored with a warning.
         </td>
     </tr>
     <tr>
