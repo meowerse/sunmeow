@@ -3,8 +3,8 @@
  * @brief Pin how src/network.cpp classifies Tailscale (CGNAT) addresses.
  *
  * sunmeow is deployed over Tailscale: host and phone reach each other on 100.64.0.0/10
- * (IPv4) and fd7a:115c:a1e0::/48 (IPv6). Three decisions hang off `net::from_address()` for
- * those peers, and each one silently changes behaviour if the classification ever moves:
+ * (IPv4) and fd7a:115c:a1e0::/48 (IPv6). Two decisions hang off `net::from_address()` for
+ * those peers, and each silently changes behaviour if the classification ever moves:
  *
  *  - `net::encryption_mode_for_address()` picks `lan_encryption_mode` for PC/LAN peers and
  *    `wan_encryption_mode` for everything else (RTSP setup, `/launch`, `/resume`).
@@ -12,9 +12,14 @@
  *    whose default is `lan` -- so a tailnet address classified WAN locks the user out of
  *    the web UI they reach over the tailnet.
  *  - Video packet size is NOT one of them: it is negotiated by the client
- *    (`x-nv-video[0].packetSize`) and capped only by `packetsize`; the address class never
- *    enters it, so there is nothing to pin for it here. The 1280-byte tailnet MTU is met on
- *    the client side, which requests small packets for a VPN/remote connection.
+ *    (`x-nv-video[0].packetSize`) and capped only by the host's `packetsize` option; the
+ *    address class never enters it, so there is nothing to pin for it here. Whether packets
+ *    fit the 1280-byte tailnet MTU is decided on the CLIENT, by moonlight-common-c
+ *    (`Connection.c`): over IPv4 it treats 100.64.0.0/10 as remote and caps packets at 1024,
+ *    which fits; over IPv6 it treats fd7a:115c:a1e0::/48 (inside fc00::/7) as LOCAL and sends
+ *    no cap, so the client's default packet size exceeds the tailnet MTU. A host reached over
+ *    Tailscale IPv6 (e.g. a MagicDNS AAAA record) needs `packetsize = 1184` in its config --
+ *    see README.meow.md.
  *
  * These are upstream decisions, pinned from a meow test so a sync that reshuffles the
  * range tables cannot change them unnoticed.

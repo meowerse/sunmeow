@@ -251,6 +251,14 @@ Capture backend selection is the thing that actually goes wrong here.
 - **Set `upnp` off.** It is off by default and must stay off — automatic port forwarding
   punches a hole in the router and defeats a Tailscale-only deployment
   ([`CLAUDE.md` §7](./CLAUDE.md)).
+- **Over Tailscale IPv6, cap `packetsize = 1184`.** The tailnet MTU is 1280. moonlight-common-c
+  (the client's protocol core) caps video packets at 1024 for remote **IPv4**, and treats
+  100.64.0.0/10 as remote, so IPv4 tailnet streams fit. It treats Tailscale's IPv6 prefix
+  `fd7a:115c:a1e0::/48` (inside `fc00::/7`) as **local** and sends no cap, so the client's
+  default packet size does not fit and every video packet fragments. If the client reaches the
+  host by an IPv6 tailnet address (for example a MagicDNS AAAA record), set `packetsize = 1184`
+  in `sunmeow.conf`; the host already caps a larger client request to it. Verified against
+  `third-party/moonlight-common-c` `62e06638`, `src/Connection.c` and `src/PlatformSockets.c`.
 - Web UI: `https://localhost:47990` (self-signed certificate on first run).
 
 > **KMS display-enumeration caveat.** An enumeration bug in `kmsgrab.cpp` blacked out both
