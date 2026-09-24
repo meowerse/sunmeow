@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -104,8 +105,15 @@ describe('meow_release_check', () => {
 describe('web UI release checks', () => {
   // An upstream sync can bring the LizardByte release fetch back without any conflict -- the
   // 2026-09-24 SPA rewrite did exactly that in Home.vue. Fail on the source, not on a review.
-  it('no page fetches LizardByte/Sunshine releases directly', () => {
-    const webRoot = path.resolve(__dirname, '../../src_assets/common/assets/web')
+  // Matches the literal URL AND the repo passed as an argument to a URL-building helper (upstream's
+  // Troubleshooting.vue already has one), so comments are stripped and the repo name is enough.
+  it('no page code names LizardByte/Sunshine (release checks must go through meow_release_check.js)', () => {
+    const here = path.dirname(fileURLToPath(import.meta.url))
+    const webRoot = path.resolve(here, '../../src_assets/common/assets/web')
+    const stripComments = (text) => text
+      .replaceAll(/<!--[\s\S]*?-->/g, '')
+      .replaceAll(/\/\*[\s\S]*?\*\//g, '')
+      .replaceAll(/(^|[^:])\/\/.*$/gm, '$1')
     const offenders = []
     const walk = (dir) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -115,7 +123,7 @@ describe('web UI release checks', () => {
             walk(full)
           }
         } else if (/\.(vue|js|html)$/.test(entry.name) && entry.name !== 'meow_release_check.js') {
-          if (fs.readFileSync(full, 'utf8').includes('repos/LizardByte/Sunshine/releases')) {
+          if (stripComments(fs.readFileSync(full, 'utf8')).includes('LizardByte/Sunshine')) {
             offenders.push(path.relative(webRoot, full))
           }
         }
