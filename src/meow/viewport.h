@@ -145,6 +145,21 @@ namespace meow::viewport {
   inline constexpr std::size_t echo_payload_length = 14;
 
   /**
+   * @brief Echo flag bit: a `uint32 frame_index` follows at offset 14 (echo v2).
+   *
+   * The host video frame number - the one the client sees in `DECODE_UNIT.frameNumber` - of
+   * the first frame encoded with the applied rectangle. Only well-formed together with
+   * `flag_desktop_extent`, because it sits at a fixed offset behind that field; a client
+   * rejects bit1 without bit0 as malformed.
+   */
+  inline constexpr std::uint8_t flag_frame_index = 0x02;
+
+  /**
+   * @brief Size of the v2 echo payload: the v1 echo plus `uint32 frame_index`.
+   */
+  inline constexpr std::size_t echo_v2_payload_length = 18;
+
+  /**
    * @brief Smallest crop we will scale from, on either axis, in captured pixels.
    *
    * Guards against a client asking for a 1x1 rectangle and driving swscale into an
@@ -616,6 +631,27 @@ namespace meow::viewport {
   }
 
   /**
+   * @brief Serialize the v2 echo: the v1 echo plus the frame it first applies to.
+   *
+   * Sets both `flag_desktop_extent` and `flag_frame_index`: the frame index sits at a fixed
+   * offset behind the desktop extent, so bit1 without bit0 would be malformed.
+   *
+   * @param applied_in_reference Applied rectangle, in reference-frame pixels.
+   * @param capture_width Width of the captured desktop in pixels.
+   * @param capture_height Height of the captured desktop in pixels.
+   * @param frame_index First frame encoded with the applied rectangle.
+   * @param out Destination buffer, at least `echo_v2_payload_length` bytes.
+   */
+  inline void write_echo_v2_payload(const rect_t &applied_in_reference, const int capture_width, const int capture_height, const std::uint32_t frame_index, std::uint8_t *const out) noexcept {
+    write_echo_payload(applied_in_reference, capture_width, capture_height, out);
+    out[1] = flag_desktop_extent | flag_frame_index;
+    out[14] = static_cast<std::uint8_t>(frame_index & 0xFF);
+    out[15] = static_cast<std::uint8_t>((frame_index >> 8) & 0xFF);
+    out[16] = static_cast<std::uint8_t>((frame_index >> 16) & 0xFF);
+    out[17] = static_cast<std::uint8_t>((frame_index >> 24) & 0xFF);
+  }
+
+  /**
    * @brief What to do about a viewport packet that just arrived.
    */
   struct request_outcome_t {
@@ -736,11 +772,11 @@ namespace meow::viewport {
     if (enabled) {
       return std::string(
         "meow viewport following: enabled. The client may request a crop of the desktop; "
-        "the software and CUDA scaling paths honour it, VA-API does not, and absolute pointer "
-        "coordinates are not remapped."
+        "the software and CUDA scaling paths honour it, VA-API does not. Absolute pointer "
+        "input is not remapped: the client sends it in uncropped stream coordinates."
       );
     }
-    return std::string("meow viewport following: disabled. Set '").append(following_config_key).append(" = enabled' in sunmeow.conf to allow the client to crop the streamed desktop.");
+    return std::string("meow viewport following: disabled. Viewport requests are answered with the full desktop; set '").append(following_config_key).append(" = enabled' in sunmeow.conf to allow the client to crop the streamed desktop.");
   }
 
 }  // namespace meow::viewport

@@ -1132,21 +1132,24 @@ supported on the current platform.
             encoder. On a wide multi-monitor desktop streamed to a phone, the whole desktop is letterboxed into the
             encode surface and text is destroyed before the encoder sees it; cropping to the region the user has
             zoomed into spends the same bitrate on far fewer pixels.
+            <br><br>
+            The host tells the client which rectangle it applied and the first video frame that carries it, so the
+            client swaps from its local zoom to the sharp crop on exactly that frame. The client maps taps and the
+            mouse into the uncropped desktop itself, so absolute input lands where the user sees it.
             @note{The client must support the viewport control message. A client that never sends one streams the
-            full desktop exactly as before.}
-            @warning{While a crop is active, absolute pointer and touch coordinates are not remapped and will land in
-            the wrong place. The software and CUDA/NVENC scaling paths apply the crop; VA-API is unaffected.
-            See the sunmeow documentation for details.}
+            full desktop exactly as before. With this disabled, viewport requests are still answered - with the full
+            desktop - so the client can tell it is talking to a sunmeow host. The software and CUDA/NVENC scaling
+            paths apply the crop; VA-API streams the full desktop.}
         </td>
     </tr>
     <tr>
         <td>Default</td>
-        <td colspan="2">@code{}disabled@endcode</td>
+        <td colspan="2">@code{}enabled@endcode</td>
     </tr>
     <tr>
         <td>Example</td>
         <td colspan="2">@code{}
-            meow_viewport_following = enabled
+            meow_viewport_following = disabled
             @endcode</td>
     </tr>
 </table>

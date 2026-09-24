@@ -249,10 +249,11 @@ namespace cuda {
      *     viewport request at all and what drops any rectangle left over from a previous
      *     session, display mode or encoder reinit.
      *
-     * Gated on the configuration so a host that never opted in allocates nothing, publishes
-     * nothing and answers nothing -- the feature is inert rather than merely quiet. (The
-     * software path in `src/video.cpp` publishes unconditionally and relies on the gate inside
-     * `on_request()` instead; both are correct, this one is quieter.)
+     * Not gated on the configuration, exactly like the software path in `src/video.cpp`: the
+     * geometry is needed even with cropping off, because every viewport request is answered
+     * (with the full frame) and cursor positions are mapped through it. Whether a request may
+     * crop is decided in `meow::viewport::on_request()`; with it off `plan_for_frame()` only
+     * ever returns the uncropped plan, which this scaler applies as a no-op.
      *
      * Every path that does *not* arm cropping calls `reset()` on the way out, and that is
      * load-bearing rather than tidy. The viewport state is process-wide: without it, a scaler
@@ -264,10 +265,6 @@ namespace cuda {
      */
     void meow_viewport_init() {
       meow_viewport_ready = false;
-      if (!meow::viewport::following_enabled()) {
-        meow::viewport::reset();
-        return;
-      }
 
       meow_viewport_baseline = meow::viewport::cuda_baseline({sws.viewport.width, sws.viewport.height, sws.viewport.offsetX, sws.viewport.offsetY}, sws.scale);
       meow_viewport_base_linear = linear_interpolation;

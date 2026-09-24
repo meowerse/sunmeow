@@ -781,7 +781,7 @@ namespace config {
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
-    false,  // MEOW-TOUCH(viewport): viewport_following, off by default
+    true,  // MEOW-TOUCH(viewport): viewport_following, on by default
     true,  // MEOW-TOUCH(cursor): cursor_reporting, on by default
 
     {

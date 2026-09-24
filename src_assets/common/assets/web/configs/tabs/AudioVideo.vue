@@ -90,7 +90,7 @@ const config = ref(props.config)
               id="meow_viewport_following"
               locale-prefix="config"
               v-model="config.meow_viewport_following"
-              default="false"
+              default="true"
     ></Checkbox>
 
     <!-- MEOW-TOUCH(cursor): report the host cursor so the client can follow it -->

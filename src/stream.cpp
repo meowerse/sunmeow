@@ -28,8 +28,7 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "logging.h"
-#include "meow/adaptive_bitrate.h"  // MEOW-TOUCH(adaptive-bitrate): loss-report parsing
-#include "meow/viewport_runtime.h"  // MEOW-TOUCH(viewport): crop geometry, wire format and session state
+#include "meow/control_stream.h"  // MEOW-TOUCH(meow-control): viewport, cursor and bitrate control messages
 #include "network.h"
 #include "platform/common.h"
 #include "process.h"
@@ -288,16 +287,16 @@ namespace stream {
   };
 
   /**
-   * @brief MEOW-TOUCH(viewport): control payload echoing the applied viewport rectangle.
+   * @brief MEOW-TOUCH(meow-control): header plus room for the largest meow control payload.
    *
-   * Layout is fixed by the client and asserted in `src/meow/viewport.h`; the bytes are
-   * written by `meow::viewport::write_payload()` so there is exactly one definition of the
-   * wire format. Declared here rather than in `src/meow/` because `control_header_v2` and
-   * the `#pragma pack(1)` region around it are private to this file.
+   * The payload bytes are written by `src/meow/` so there is exactly one definition of each
+   * wire format; only as many bytes as the message needs are sent. Declared here rather than
+   * in `src/meow/` because `control_header_v2` and the `#pragma pack(1)` region around it
+   * are private to this file.
    */
-  struct control_viewport_t {
+  struct control_meow_t {
     control_header_v2 header;  ///< Control message header preceding this payload.
-    std::uint8_t payload[meow::viewport::echo_payload_length];  ///< Serialized viewport rectangle and desktop size.
+    std::uint8_t payload[meow::control::max_payload_length];  ///< Serialized meow payload.
   };
 
   /**
@@ -573,6 +572,8 @@ namespace stream {
     safe::signal_t controlEnd;  ///< Signal raised when the control channel exits.
 
     std::atomic<session::state_e> state;  ///< Current lifecycle state observed by stream workers.
+
+    meow::control::session_state_t meow;  ///< MEOW-TOUCH(meow-control): per-session state of the meow control messages.
   };
 
   /**
@@ -1136,47 +1137,37 @@ namespace stream {
   }
 
   /**
-   * @brief MEOW-TOUCH(viewport): echo the applied viewport rectangle back to the client.
-   *
-   * The host regularly applies something other than what was asked for -- the rectangle is
-   * clamped to the desktop, grown to a minimum size, even-aligned for chroma, or refused
-   * outright when its aspect ratio would scale to a sliver. Without this the client would
-   * show the crop *under its own local zoom*, magnified twice, so this is load-bearing
-   * rather than informational: it is what lets the client reset to 1:1 once a crop lands.
-   * The applied rectangle is reported in the coordinate system the request arrived in, and
-   * is reported even when what was applied is the whole desktop.
+   * @brief MEOW-TOUCH(meow-control): frame, encrypt and send one meow control message.
    *
    * Modelled on send_hdr_mode() below; the framing, the encryption and the peer lookup are
-   * all private to this file, which is why this cannot live in `src/meow/`.
+   * all private to this file, which is why this cannot live in `src/meow/`. What to send and
+   * when is decided in `src/meow/control_stream.h`.
    *
    * @param session Active streaming session.
-   * @param echo Applied rectangle in the client's own coordinate system, plus the captured
-   *        desktop size so the client can derive the host's padding transform.
-   * @return 0 when the control message is queued; nonzero when no control peer is ready.
+   * @param type Control packet type.
+   * @param payload Payload bytes.
+   * @param length Payload length; at most `meow::control::max_payload_length`.
+   * @return 0 when the control message is queued; nonzero otherwise.
    */
-  int send_viewport(session_t *session, const meow::viewport::echo_t &echo) {
-    if (!session->control.peer) {
-      // Still waiting for PING from Moonlight.
+  int send_meow_control(session_t *session, std::uint16_t type, const std::uint8_t *payload, std::size_t length) {
+    if (!session->control.peer || length > meow::control::max_payload_length) {
       return -1;
     }
 
-    control_viewport_t plaintext {};
-    plaintext.header.type = meow::viewport::control_packet_type;
-    plaintext.header.payloadLength = sizeof(control_viewport_t) - sizeof(control_header_v2);
-    meow::viewport::write_echo_payload(echo.applied, echo.capture_width, echo.capture_height, plaintext.payload);
+    control_meow_t plaintext {};
+    plaintext.header.type = type;
+    plaintext.header.payloadLength = static_cast<std::uint16_t>(length);
+    std::copy_n(payload, length, plaintext.payload);
 
     std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
       encrypted_payload;
 
-    auto payload = encode_control(session, util::view(plaintext), encrypted_payload);
-    if (session->broadcast_ref->control_server.send(payload, session->control.peer)) {
+    auto payload_view = encode_control(session, std::string_view {(const char *) &plaintext, sizeof(control_header_v2) + length}, encrypted_payload);
+    if (session->broadcast_ref->control_server.send(payload_view, session->control.peer)) {
       TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
-      BOOST_LOG(warning) << "Couldn't send viewport echo to ["sv << addr << ':' << port << ']';
+      BOOST_LOG(warning) << "Couldn't send meow control message 0x"sv << util::hex(type).to_string_view() << " to ["sv << addr << ':' << port << ']';
       return -1;
     }
-
-    BOOST_LOG(debug) << "Applied viewport (stream coordinates): "sv << echo.applied.width << 'x' << echo.applied.height << '+' << echo.applied.x << '+' << echo.applied.y
-                     << " of desktop "sv << echo.capture_width << 'x' << echo.capture_height;
     return 0;
   }
 
@@ -1222,14 +1213,9 @@ namespace stream {
    * @param server RTSP server instance handling the request.
    */
   void controlBroadcastThread(control_server_t *server) {
-    // MEOW-TOUCH(viewport): viewport ("foveated streaming") crop requests. The wire
-    // numbering is checked against packetTypes here rather than trusted, and registration
-    // is refused on a collision so an upstream message can never be dispatched into it.
-    auto viewport_registration = meow::viewport::map_request_handler(*server, packetTypes, std::size(packetTypes), send_viewport, meow::viewport::following_enabled());
-    BOOST_LOG(info) << viewport_registration.note;
-    if (!viewport_registration.warning.empty()) {
-      BOOST_LOG(error) << viewport_registration.warning;
-    }
+    // MEOW-TOUCH(meow-control): viewport (0x3003), cursor (0x3004), receiver report (0x3005)
+    // and FEC status (0x5502) handlers. Numbers are checked against packetTypes, never trusted.
+    meow::control::register_handlers(*server, packetTypes, std::size(packetTypes));
 
     server->map(packetTypes[IDX_PERIODIC_PING], [](session_t *session, const std::string_view &payload) {
       BOOST_LOG(verbose) << "type [IDX_PERIODIC_PING]"sv;
@@ -1244,6 +1230,9 @@ namespace stream {
     });
 
     server->map(packetTypes[IDX_LOSS_STATS], [&](session_t *session, const std::string_view &payload) {
+      if (!meow::control::loss_stats_payload_ok(payload)) {  // MEOW-TOUCH(meow-control): F5 length check
+        return;
+      }
       int32_t *stats = (int32_t *) payload.data();
       auto count = stats[0];
       std::chrono::milliseconds t {stats[1]};
@@ -1259,27 +1248,6 @@ namespace stream {
         << "---end stats---";
     });
 
-    // MEOW-TOUCH(adaptive-bitrate): inbound 0x5502 is the client's SS_FRAME_FEC_STATUS report -
-    // the only loss signal a Sunshine host actually receives. IDX_LOSS_STATS above is never sent
-    // by a client talking to Sunshine (see src/meow/adaptive_bitrate.h for the evidence), and it
-    // was previously dropped as an unknown type. Validation and all control logic live in
-    // src/meow/, so this hook only forwards a validated sample to the encoder thread.
-    server->map(meow::adaptive_bitrate::frame_fec_status_packet_type, [&](session_t *session, const std::string_view &payload) {
-      if (!config::video.adaptive_bitrate) {
-        return;  // Feature off: do no per-packet work at all.
-      }
-      if (const auto sample = meow::adaptive_bitrate::parse_frame_fec_status(payload)) {
-        // mail_raw_t::queue() returns null when the id is present but its weak_ptr has
-        // already expired - which happens for the whole window between the encoder thread
-        // dropping its reference and ~post_t running cleanup(), and cleanup() only erases one
-        // stale entry per call. The client controls both the rate of these packets and, via
-        // loss-induced reinits, the timing, so this must be checked.
-        if (auto samples = session->mail->queue<meow::adaptive_bitrate::loss_sample_t>(meow::adaptive_bitrate::mail_id)) {
-          samples->raise(*sample);
-        }
-      }
-    });
-
     server->map(packetTypes[IDX_REQUEST_IDR_FRAME], [&](session_t *session, const std::string_view &payload) {
       BOOST_LOG(debug) << "type [IDX_REQUEST_IDR_FRAME]"sv;
 
@@ -1287,6 +1255,9 @@ namespace stream {
     });
 
     server->map(packetTypes[IDX_INVALIDATE_REF_FRAMES], [&](session_t *session, const std::string_view &payload) {
+      if (!meow::control::invalidate_ref_frames_payload_ok(payload)) {  // MEOW-TOUCH(meow-control): F5 length check
+        return;
+      }
       auto frames = (std::int64_t *) payload.data();
       auto firstFrame = frames[0];
       auto lastFrame = frames[1];
@@ -1438,13 +1409,9 @@ namespace stream {
             continue;
           }
 
-          // MEOW-TOUCH(viewport): tell the client when the host dropped its crop on its
-          // own (encoder reinit, display mode change). Without this the client keeps its
-          // local zoom reset to 1:1 and is shown the whole desktop with no way to know.
+          // MEOW-TOUCH(meow-control): viewport echoes, applied bitrate, cursor positions, RTT samples.
           if (session->control.peer) {
-            if (const auto revocation = meow::viewport::take_revocation_echo()) {
-              send_viewport(session, *revocation);
-            }
+            meow::control::on_session_tick(session, send_meow_control, now);
           }
 
           // Remember if we have a session that's waiting for a peer to connect to the
@@ -1478,7 +1445,7 @@ namespace stream {
         break;
       }
 
-      server->iterate(150ms);
+      server->iterate(meow::control::iterate_timeout(150ms));  // MEOW-TOUCH(meow-control): 60 Hz while a client follows the cursor
     }
 
     // Let all remaining connections know the server is shutting down

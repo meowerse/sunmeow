@@ -323,7 +323,7 @@
     "meow_cursor_reporting": "Report the host cursor",
     "meow_cursor_reporting_desc": "Send the host mouse position to Moonmeow so a zoomed-in view can follow the cursor. On KDE Plasma (KWin capture) with frames delivered through system memory, the compositor sends the cursor separately and Sunmeow draws it back into the stream; otherwise the cursor stays drawn by the compositor and no position is sent.",
     "meow_viewport_following": "Follow the client's viewport",
-    "meow_viewport_following_desc": "Crop the captured desktop to the region the client is currently displaying before scaling it into the encoder, so the same bitrate is spent on far fewer pixels. Useful when streaming a wide multi-monitor desktop to a small screen over a slow link. Warning: while a crop is active, absolute pointer and touch coordinates are not remapped and will land in the wrong place, and the VA-API scaling path does not apply the crop at all.",
+    "meow_viewport_following_desc": "Crop the captured desktop to the region the client is currently displaying before scaling it into the encoder, so the same bitrate is spent on far fewer pixels. Useful when streaming a wide multi-monitor desktop to a small screen over a slow link. Moonmeow maps taps and the mouse into the uncropped desktop itself, so input lands where you see it. Applied on the software and CUDA/NVENC scaling paths; VA-API streams the full desktop.",
     "minimum_fps_target": "Minimum FPS Target",
     "minimum_fps_target_desc": "The lowest effective FPS a stream can reach. A value of 0 is treated as roughly half of the stream's FPS. A setting of 20 is recommended if you stream 24 or 30fps content.",
     "min_log_level": "Log Level",

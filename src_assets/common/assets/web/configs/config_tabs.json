@@ -44,7 +44,7 @@
       "install_steam_audio_drivers": "enabled",
       "adapter_name": "",
       "output_name": "",
-      "meow_viewport_following": "disabled",
+      "meow_viewport_following": "enabled",
       "meow_cursor_reporting": "enabled",
       "dd_configuration_option": "disabled",
       "dd_resolution_option": "auto",
