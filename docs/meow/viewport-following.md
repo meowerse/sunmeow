@@ -255,6 +255,10 @@ Three consequences worth knowing:
 > index sits at a fixed offset behind the desktop extent. A revocation (the host dropping a
 > crop on an encoder reinit) is echoed the same way.
 >
+> The control thread would otherwise sleep up to 150 ms in `enet_host_service()` before sending
+> the published echo - long enough to show the client's old mapping over the new crop - so it
+> polls every 8 ms while an echo is owed (`meow::viewport::echo_owed()`).
+>
 > Because KWin only delivers frames on damage, a pan on an idle desktop would otherwise never
 > reach the encoder. `encode_run()` keeps a reference to the last captured image and converts
 > it again - once per new request, never in the steady state - so the crop and its echo

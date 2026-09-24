@@ -27,6 +27,7 @@
 #include <string_view>
 
 // local includes
+#include "src/audio.h"
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/meow/adaptive_bitrate.h"
@@ -54,11 +55,12 @@ namespace meow::control {
   inline constexpr std::chrono::milliseconds rtt_sample_interval {500};
 
   /**
-   * @brief Control-thread poll interval while a subscribed client is following the cursor.
+   * @brief Control-thread poll interval while a client follows the cursor or an echo is owed.
    *
    * The upstream loop blocks in `enet_host_service()` for up to 150 ms when the link is quiet,
-   * which would cap cursor updates at ~7 Hz. Polling at 8 ms keeps a 60 Hz position stream
-   * within one frame of the pointer. Only while someone is subscribed.
+   * which would cap cursor updates at ~7 Hz and delay a viewport echo by up to that long.
+   * Polling at 8 ms keeps a 60 Hz position stream within one frame of the pointer and an echo
+   * within one frame of the frame it names. Only while one of the two is needed.
    */
   inline constexpr std::chrono::milliseconds cursor_poll_interval {8};
 
@@ -99,6 +101,25 @@ namespace meow::control {
   }
 
   /**
+   * @brief Whether an `IDX_INPUT_DATA` payload holds the ciphertext its length prefix claims.
+   *
+   * Upstream reads a big-endian `int32` length from the first four bytes and then builds a view
+   * of that many bytes after them with no bounds check, so a short payload or an inflated
+   * length is decrypted straight off the end of the buffer - the same class of bug as F5, in
+   * the handler next to them.
+   *
+   * @param payload Payload, excluding the header.
+   * @return True when it is safe to read.
+   */
+  [[nodiscard]] inline constexpr bool input_data_payload_ok(const std::string_view payload) noexcept {
+    if (payload.size() < sizeof(std::int32_t)) {
+      return false;
+    }
+    const auto length = (static_cast<std::uint32_t>(static_cast<std::uint8_t>(payload[0])) << 24) | (static_cast<std::uint32_t>(static_cast<std::uint8_t>(payload[1])) << 16) | (static_cast<std::uint32_t>(static_cast<std::uint8_t>(payload[2])) << 8) | static_cast<std::uint32_t>(static_cast<std::uint8_t>(payload[3]));
+    return length <= payload.size() - sizeof(std::int32_t);
+  }
+
+  /**
    * @brief Whether `type` already appears in the host's packet type table.
    *
    * @param type Packet type to check.
@@ -113,6 +134,19 @@ namespace meow::control {
       }
     }
     return false;
+  }
+
+  /**
+   * @brief The FEC and audio budget `rtsp.cpp` deducted from this session's requested bitrate.
+   *
+   * @tparam Session `stream::session_t`.
+   * @param session The session.
+   * @return The budget, for converting between client and encoder bitrates.
+   */
+  template<class Session>
+  [[nodiscard]] adaptive_bitrate::wire_budget_t wire_budget(const Session *session) {
+    const auto &audio = session->config.audio;
+    return {config::stream.fec_percentage, (audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * audio.channels};
   }
 
   /**
@@ -135,6 +169,7 @@ namespace meow::control {
     session_state_t() {
       viewport::forget_request();
     }
+
     session_state_t(const session_state_t &) = delete;
     session_state_t &operator=(const session_state_t &) = delete;
 
@@ -209,9 +244,14 @@ namespace meow::control {
       // Held from the first report on, so APPLIED reaches only clients that report.
       session->meow.applied = session->mail->template event<int>(adaptive_bitrate::applied_mail_id);
     }
+    // The client's ceiling is its *total* bitrate, like the one it negotiated over RTSP; the
+    // controller works in encoder bitrate, which rtsp.cpp derived by deducting FEC, audio and
+    // overhead. Convert the same way, or the stream could overshoot the user's cap by ~25%.
+    auto converted = *report;
+    converted.max_kbps = static_cast<std::uint32_t>(adaptive_bitrate::client_to_encoder_kbps(static_cast<int>(std::min<std::uint32_t>(report->max_kbps, adaptive_bitrate::max_configurable_kbps)), wire_budget(session)));
     // queue() returns null while an expired entry lingers; the client controls the timing.
     if (auto reports = session->mail->template queue<adaptive_bitrate::receiver_report_t>(adaptive_bitrate::report_mail_id)) {
-      reports->raise(*report);
+      reports->raise(converted);
     }
   }
 
@@ -302,7 +342,10 @@ namespace meow::control {
 
     if (state.applied) {
       if (const auto kbps = state.applied->try_pop(); kbps && *kbps > 0) {
-        adaptive_bitrate::write_bitrate_applied(static_cast<std::uint32_t>(*kbps), buffer.data());
+        // Reported in the client's units - the total bitrate it would negotiate to get this
+        // encoder rate - so a client that remembers it and asks for it next session gets the
+        // same stream back rather than one deducted twice.
+        adaptive_bitrate::write_bitrate_applied(static_cast<std::uint32_t>(adaptive_bitrate::encoder_to_client_kbps(*kbps, wire_budget(session))), buffer.data());
         send(session, adaptive_bitrate::receiver_report_packet_type, buffer.data(), adaptive_bitrate::bitrate_applied_length);
       }
     }
@@ -336,7 +379,8 @@ namespace meow::control {
    * @return `upstream`, or `cursor_poll_interval` while a client follows the cursor.
    */
   [[nodiscard]] inline std::chrono::milliseconds iterate_timeout(const std::chrono::milliseconds upstream) noexcept {
-    return cursor::polling_wanted() ? std::min(upstream, cursor_poll_interval) : upstream;
+    const bool fast = cursor::polling_wanted() || viewport::echo_owed(std::chrono::steady_clock::now());
+    return fast ? std::min(upstream, cursor_poll_interval) : upstream;
   }
 
 }  // namespace meow::control

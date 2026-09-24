@@ -277,6 +277,35 @@ namespace {
   }
 
   // ---------------------------------------------------------------------------
+  // Client <-> encoder bitrate units (rtsp.cpp's FEC/audio/overhead deduction)
+  // ---------------------------------------------------------------------------
+
+  TEST(AdaptiveBitrateUnitsTest, ClientToEncoderIsRtspsFormula) {
+    const meow::adaptive_bitrate::wire_budget_t stereo {20, 192};
+    // 20000 * 0.8 = 16000; - min(192, 3200) = 15808; - min(500, 1580) = 15308.
+    EXPECT_EQ(meow::adaptive_bitrate::client_to_encoder_kbps(20000, stereo), 15308);
+    // Small budgets hit the percentage caps instead: 1000 * 0.8 = 800; - min(192, 160) = 640; - min(500, 64) = 576.
+    EXPECT_EQ(meow::adaptive_bitrate::client_to_encoder_kbps(1000, stereo), 576);
+    // FEC above 80% is not deducted, exactly like rtsp.cpp.
+    EXPECT_EQ(meow::adaptive_bitrate::client_to_encoder_kbps(10000, {90, 0}), 9500);
+    EXPECT_EQ(meow::adaptive_bitrate::client_to_encoder_kbps(0, stereo), 0);
+  }
+
+  TEST(AdaptiveBitrateUnitsTest, EncoderToClientRoundTripsWithoutRatcheting) {
+    // A client that remembers APPLIED and negotiates it next session must get the same encoder
+    // rate back, not one deducted twice.
+    for (const auto &budget : {meow::adaptive_bitrate::wire_budget_t {20, 192}, meow::adaptive_bitrate::wire_budget_t {0, 0}, meow::adaptive_bitrate::wire_budget_t {50, 1536}, meow::adaptive_bitrate::wire_budget_t {90, 256}}) {
+      for (int encoder = 400; encoder < 200000; encoder += 97) {
+        const auto client = meow::adaptive_bitrate::encoder_to_client_kbps(encoder, budget);
+        const auto back = meow::adaptive_bitrate::client_to_encoder_kbps(client, budget);
+        ASSERT_GE(back, encoder) << encoder;
+        ASSERT_LT(meow::adaptive_bitrate::client_to_encoder_kbps(client - 1, budget), encoder) << "smallest such client rate, " << encoder;
+        ASSERT_EQ(meow::adaptive_bitrate::client_to_encoder_kbps(meow::adaptive_bitrate::encoder_to_client_kbps(back, budget), budget), back);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // resolve_bounds — floor/ceiling rules (spec H1)
   // ---------------------------------------------------------------------------
 
@@ -488,24 +517,66 @@ namespace {
     controller_t c {resolve_bounds(true, 0, 0, 20000, 0), now, {}, 20000};
     drive(c, now, 5, clean_link);
     conditions_t lossy = clean_link;
-    lossy.loss_permille = 60;
+    lossy.loss_permille = 150;  // beyond half of what 20% FEC carries
     EXPECT_TRUE(drive(c, now, 1, lossy).empty()) << "one bad window is noise";
     const auto changes = drive(c, now, 1, lossy);
     ASSERT_EQ(changes.size(), 1u);
     EXPECT_EQ(changes[0].reason, reason_t::sustained_loss);
     EXPECT_EQ(changes[0].kbps, 15000);
-    EXPECT_EQ(changes[0].observed_loss_permille, 60);
+    EXPECT_EQ(changes[0].observed_loss_permille, 150);
   }
 
-  TEST(AdaptiveBitrateControllerTest, DamagedFramesAloneAlsoBackOff) {
-    // A stock client sends no receiver reports; FEC reports still drive the controller.
+  TEST(AdaptiveBitrateControllerTest, UnrecoveredFramesAloneBackOff) {
+    // A stock client sends no receiver reports; its FEC reports still drive the controller when
+    // FEC could not rebuild the frames.
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(true, 0, 0, 20000, 0), now, {}, 20000};
-    conditions_t damaged {12, true, std::nullopt, 0, 0, 20, 0};
-    const auto changes = drive(c, now, 5, damaged);
+    conditions_t unrecovered {3, false, std::nullopt, 0, 0, 20, 0};
+    const auto changes = drive(c, now, 5, unrecovered);
     ASSERT_FALSE(changes.empty());
     EXPECT_EQ(changes[0].reason, reason_t::sustained_loss);
     EXPECT_EQ(changes[0].observed_loss_permille, -1);
+  }
+
+  TEST(AdaptiveBitrateControllerTest, RandomLossThatFecRepairsIsNotABackOff) {
+    // The case the review caught: 0.5-2% random Wi-Fi/cellular loss damages ~16-50% of
+    // 35-packet frames, every one of them rebuilt by FEC, with a flat RTT. That is FEC doing its
+    // job; the stream must stay at its ceiling (spec N4, N5), stock client or not.
+    for (const auto &[damaged, loss] : std::vector<std::pair<int, std::optional<int>>> {{10, std::nullopt}, {10, 5}, {20, 15}, {30, 20}, {45, 40}}) {
+      auto now = std::chrono::steady_clock::time_point {};
+      const auto bounds = resolve_bounds(true, 0, 0, 20000, 0);
+      controller_t c {bounds, now, {}, 20000};
+      conditions_t wifi {damaged, true, loss, 15000, 0, 25, 25};
+      std::vector<int> trajectory;
+      const auto changes = drive(c, now, 120, wifi, &trajectory);
+      EXPECT_TRUE(changes.empty()) << damaged << " damaged frames/s";
+      EXPECT_EQ(c.current_kbps(), bounds.max_kbps);
+    }
+  }
+
+  TEST(AdaptiveBitrateControllerTest, RandomLossDoesNotStopTheClimbBack) {
+    // After a real congestion back-off, a link with light random loss still probes back up.
+    auto now = std::chrono::steady_clock::time_point {};
+    const auto bounds = resolve_bounds(true, 0, 0, 20000, 0);
+    controller_t c {bounds, now, {}, 20000, 8000};
+    conditions_t wifi {15, true, 10, 9000, 0, 25, 25};
+    drive(c, now, 90, wifi);
+    EXPECT_EQ(c.current_kbps(), bounds.max_kbps);
+  }
+
+  TEST(AdaptiveBitrateControllerTest, DamageWithARisingRttIsCongestion) {
+    // The same damaged-frame rate *with* a queue building is congestion, and backs off.
+    auto now = std::chrono::steady_clock::time_point {};
+    controller_t c {resolve_bounds(true, 0, 0, 20000, 0), now, {}, 20000};
+    drive(c, now, 10, clean_link);
+    std::vector<decision_t> changes;
+    for (const int rtt : {120, 180, 240, 300}) {
+      conditions_t congested {12, true, 40, 12000, 0, rtt, rtt};
+      for (const auto &d : drive(c, now, 1, congested)) {
+        changes.push_back(d);
+      }
+    }
+    ASSERT_FALSE(changes.empty());
   }
 
   TEST(AdaptiveBitrateControllerTest, GoodputCapsTheBackOffOnASaturatedLink) {
@@ -529,7 +600,7 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(true, 0, 0, 20000, 0), now, {}, 20000};
     drive(c, now, 5, clean_link);
-    conditions_t random_loss {0, true, 60, 900, 0, 20, 20};
+    conditions_t random_loss {0, true, 150, 900, 0, 20, 20};
     const auto changes = drive(c, now, 2, random_loss);
     ASSERT_EQ(changes.size(), 1u);
     EXPECT_EQ(changes[0].kbps, 15000);
@@ -632,7 +703,7 @@ namespace {
     drive(c, now, 5, clean_link);
     // Congest at 20000.
     conditions_t lossy = clean_link;
-    lossy.loss_permille = 80;
+    lossy.loss_permille = 150;
     ASSERT_EQ(drive(c, now, 2, lossy).size(), 1u);
     ASSERT_EQ(c.current_kbps(), 15000);
 
@@ -667,7 +738,7 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(true, 0, 0, 20000, 0), now, {}, 20000};
     conditions_t lossy = clean_link;
-    lossy.loss_permille = 60;
+    lossy.loss_permille = 150;
     std::vector<decision_t> changes;
     for (int i = 0; i < 60; ++i) {
       for (const auto &d : drive(c, now, 1, (i % 2) ? lossy : clean_link)) {
@@ -682,7 +753,7 @@ namespace {
     auto now = std::chrono::steady_clock::time_point {};
     controller_t c {resolve_bounds(true, 0, 0, 20000, 0), now, {}, 20000};
     conditions_t lossy = clean_link;
-    lossy.loss_permille = 60;
+    lossy.loss_permille = 150;
     std::vector<decision_t> changes;
     for (int i = 0; i < 24; ++i) {
       for (const auto &d : drive(c, now, 2, lossy)) {
@@ -794,7 +865,7 @@ namespace {
     now -= std::chrono::minutes(30);
     static_cast<void>(c.tick(now));
     conditions_t lossy = clean_link;
-    lossy.loss_permille = 90;
+    lossy.loss_permille = 150;
     EXPECT_FALSE(drive(c, now, 6, lossy).empty()) << "still decides after the jump";
   }
 

@@ -9,8 +9,8 @@
  *  - the **control thread** reads it for every subscribed session and sends `0x3004`
  *    POSITION messages (`src/meow/control_stream.h`).
  *
- * That is a single-writer hand-off of a few integers, so it is one relaxed-free 64-bit atomic
- * word rather than a lock: x and y in 16 bits each, a visible bit, an active bit and a 30-bit
+ * That is a single-writer hand-off of a few integers, so it is one 64-bit atomic word
+ * rather than a lock: x and y in 16 bits each, a visible bit, an active bit and a 30-bit
  * change counter. The writer never blocks on the network and the reader never blocks on
  * capture.
  */
@@ -41,11 +41,13 @@ namespace meow::cursor {
     inline std::atomic<int> subscribers {0};
 
     /**
-     * @brief Set once blending turned out to be impossible for this host; sticky.
+     * @brief Set once blending turned out to be impossible for this host; sticky until restart.
      *
      * When the compositor negotiates a frame format the blend cannot write (10-bit, or DMA-BUF),
      * the stream would otherwise show no cursor at all. The capture is restarted instead, and
-     * every later stream asks for the cursor embedded in the pixels, with no positions.
+     * every later stream of this process asks for the cursor embedded in the pixels, with no
+     * positions. Sticky on purpose: the negotiated format depends on the compositor and the
+     * display mode, and flapping between modes would restart the capture every session.
      */
     inline std::atomic<bool> metadata_refused {false};
 

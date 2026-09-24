@@ -644,7 +644,9 @@ namespace pipewire {
 
       // MEOW-TOUCH(cursor): metadata pointer mode has its own memory path (src/meow/cursor_pipewire.h).
       if (d->meow_cursor.enabled && b->buffer->datas[0].type != SPA_DATA_DmaBuf) {
-        meow::cursor::pipewire::process_memory(d, b);
+        meow::cursor::pipewire::process_memory(d, b, [d](pw_buffer *buffer) {
+          pw_stream_queue_buffer(d->stream, buffer);
+        });
         return;
       }
 
@@ -768,7 +770,9 @@ namespace pipewire {
       n_params++;
       // MEOW-TOUCH(cursor): request cursor metadata, or give up on it for a format we cannot draw into.
       if (d->meow_cursor.enabled && !meow::cursor::pipewire::on_format(d->meow_cursor, d->format.info.raw.format, buffer_types & (1 << SPA_DATA_DmaBuf))) {
-        d->shared->stream_dead.store(true);
+        if (d->shared) {
+          d->shared->stream_dead.store(true);
+        }
       } else if (d->meow_cursor.enabled) {
         params[n_params++] = meow::cursor::pipewire::meta_param(&pod_builder);
       }
@@ -902,8 +906,9 @@ namespace pipewire {
       int pipewire_fd = -1;
       auto pipewire_node = PW_ID_ANY;  // Default for invalid stream from pipewire docs
       uint64_t pipewire_object_serial = SPA_ID_INVALID;  // Default for invalid stream from pipewire docs for PW_KEY_OBJECT_SERIAL
-      // MEOW-TOUCH(cursor): take the cursor as metadata when frames come through memory we can draw into.
-      meow_cursor_metadata = meow::cursor::metadata_mode_wanted(meow::cursor::pipewire::memory_path(mem_type, n_dmabuf_infos, display_is_nvidia));
+      // MEOW-TOUCH(cursor): whether frames will come through memory we can draw a cursor into;
+      // only a backend that can ask for cursor metadata (KWin) acts on it in configure_stream().
+      meow_cursor_memory_path = meow::cursor::pipewire::memory_path(mem_type, n_dmabuf_infos, display_is_nvidia);
 
       // Fetch stream info
       if (configure_stream(display_name, pipewire_fd, pipewire_node, pipewire_object_serial) < 0 || (pipewire_node == PW_ID_ANY && (pipewire_object_serial & SPA_ID_INVALID) == SPA_ID_INVALID)) {
@@ -1442,7 +1447,8 @@ namespace pipewire {
   protected:
     // Allow subclasses to access for pipewire requirements setup and stream dead checks
     pipewire_t pipewire;  ///< Pipewire.
-    bool meow_cursor_metadata = false;  ///< MEOW-TOUCH(cursor): open the stream in metadata pointer mode.
+    bool meow_cursor_memory_path = false;  ///< MEOW-TOUCH(cursor): frames will arrive in memory buffers.
+    bool meow_cursor_metadata = false;  ///< MEOW-TOUCH(cursor): set by a backend that opened its stream in metadata pointer mode.
     std::shared_ptr<shared_state_t> shared_state;  ///< Shared state.
   };
 }  // namespace pipewire

@@ -233,6 +233,18 @@ All with this tree's bundled FFmpeg or the system `ffmpeg` on the RTX 5050; the 
   costs roughly 0.3-0.5 ms more per frame at 720p and 1-2 ms at 1080p/1440p on this GPU, so the
   default was **not** changed; on a slow link with an HEVC or AV1 client, set
   `nvenc_preset = 3`. Spatial and temporal AQ made no measurable difference (-0.1 to -0.5 dB).
+- **Adaptive FEC was evaluated and deferred.** Sunshine sends `fec_percentage` (default 20) parity
+  for every frame, so a clean link spends ~17% of its bits on parity. Lowering it when clean and
+  raising it for random loss is compatible with stock clients (each packet carries its own FEC
+  percentage), but it is a per-frame read in the upstream video broadcast thread fed from the
+  encoder thread, and the measured harm it would address - FEC-repaired random loss driving the
+  bitrate down - is fixed at the source instead: the controller no longer backs off on loss FEC
+  repairs. Revisit with a hardware loss profile of the Tailscale path.
+- **APPLIED is reported in the client's units.** The bitrate a client asks for is a total that
+  `rtsp.cpp` shrinks by the FEC share, audio and overhead before it reaches the encoder. The
+  host converts the client's `max_kbps` the same way before using it as a ceiling, and reports
+  APPLIED back in client units, so a client that remembers an applied rate and negotiates it
+  next session gets the same stream rather than one deducted twice.
 - **H.264 NVENC pads a static desktop to the full bitrate.** With `cbr_padding` off, an idle
   H.264 stream still carries one filler NAL (type 12) per frame and uses the whole 8 Mbps, where
   HEVC uses 0.04 Mbps and AV1 0.03 Mbps for the same idle desktop. Prefer HEVC or AV1 on the

@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -191,6 +192,17 @@ namespace meow::viewport {
      * @brief Sequence number of the most recently published echo; 0 = none yet.
      */
     inline std::atomic<std::uint32_t> echo_seq {0};
+
+    /**
+     * @brief The highest `echo_seq` the control thread has sent to any session.
+     */
+    inline std::atomic<std::uint32_t> control_sent_seq {0};
+
+    /**
+     * @brief When a request last arrived or an echo was last published, in steady-clock
+     *        nanoseconds since its epoch; lets the control thread poll quickly for a while.
+     */
+    inline std::atomic<std::int64_t> echo_activity_ns {0};
 
     /**
      * @brief Guards `echo_value`. Taken only when an echo is published or sent - never on a
@@ -400,6 +412,7 @@ namespace meow::viewport {
     }
     detail::last_allow_crop.store(allow_crop, std::memory_order_relaxed);
     detail::last_request.store(detail::pack(*in_frame), std::memory_order_release);
+    detail::echo_activity_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
 
     // Acquire on `accepting` first, then read `geometry`. `on_scaler_init()` writes the
     // geometry before releasing this flag, so the two are a matched pair.
@@ -456,6 +469,25 @@ namespace meow::viewport {
       detail::echo_value = echo;
     }
     detail::echo_seq.fetch_add(1, std::memory_order_release);
+    detail::echo_activity_ns.store(std::chrono::steady_clock::now().time_since_epoch().count(), std::memory_order_relaxed);
+  }
+
+  /**
+   * @brief Whether an echo is being produced or waits to be sent.
+   *
+   * The encode thread publishes the echo, but nothing wakes the control thread, which otherwise
+   * sleeps in `enet_host_service()` for up to 150 ms. The client presents cropped frames with
+   * its old mapping until the echo arrives, so that sleep would show as a flash of double
+   * magnification. While this is true the control loop polls quickly. Bounded to one second
+   * after the last request or echo, so an echo nobody is connected to receive cannot keep the
+   * loop spinning.
+   *
+   * @param now Current time.
+   * @return True when the control thread should poll quickly.
+   */
+  [[nodiscard]] inline bool echo_owed(const std::chrono::steady_clock::time_point now) noexcept {
+    const bool owed = detail::generation.load(std::memory_order_relaxed) != detail::echoed_generation.load(std::memory_order_relaxed) || detail::echo_seq.load(std::memory_order_acquire) != detail::control_sent_seq.load(std::memory_order_relaxed);
+    return owed && now.time_since_epoch().count() - detail::echo_activity_ns.load(std::memory_order_relaxed) < std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds {1}).count();
   }
 
   /**
@@ -473,6 +505,7 @@ namespace meow::viewport {
       return std::nullopt;
     }
     last_sent = seq;
+    detail::control_sent_seq.store(seq, std::memory_order_relaxed);
     std::lock_guard lock {detail::echo_mutex};
     return detail::echo_value;
   }

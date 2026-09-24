@@ -234,11 +234,13 @@ namespace meow::cursor::pipewire {
    * thread is woken when there is something new to show.
    *
    * @tparam StreamData `pipewire::stream_data_t`.
+   * @tparam Requeue Callable `void(pw_buffer *)` returning a buffer to PipeWire.
    * @param d Stream data.
-   * @param b The newest dequeued buffer; always queued back before returning.
+   * @param b The newest dequeued buffer; always handed to `requeue` before returning.
+   * @param requeue Returns the buffer to PipeWire (`pw_stream_queue_buffer`).
    */
-  template<class StreamData>
-  void process_memory(StreamData *d, pw_buffer *b) {
+  template<class StreamData, class Requeue>
+  void process_memory(StreamData *d, pw_buffer *b, Requeue &&requeue) {
     auto *buffer = b->buffer;
     const auto &data = buffer->datas[0];
     const bool cursor_only = !data.data || !data.chunk || data.chunk->size == 0 || (data.chunk->flags & SPA_CHUNK_FLAG_CORRUPTED);
@@ -279,7 +281,7 @@ namespace meow::cursor::pipewire {
       }
     }
 
-    pw_stream_queue_buffer(d->stream, b);
+    requeue(b);
     if (wake) {
       d->frame_cv.notify_one();
     }

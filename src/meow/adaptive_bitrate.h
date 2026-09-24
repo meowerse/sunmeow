@@ -30,8 +30,11 @@
  *
  * Decisions are made once per window (1 s):
  *
- *  - **Loss back-off** (multiplicative, x0.75) after two consecutive bad windows - a
- *    damaged-frame fraction or a pre-FEC loss rate at or above its high threshold.
+ *  - **Loss back-off** (multiplicative, x0.75) after two consecutive lossy windows. Loss that
+ *    FEC repairs is not a reason to back off - that is what FEC is for, and random wireless
+ *    loss damages a large share of frames while every one of them still decodes. A window is
+ *    lossy when frames could not be rebuilt, when pre-FEC loss exceeds half of what FEC can
+ *    carry, or when loss coincides with an elevated round-trip time (a queue overflowing).
  *  - **Delay back-off** (x0.85) *before* loss: when the round-trip time has risen well above
  *    its baseline and is still rising for two consecutive windows, a queue is building.
  *  - **Goodput ceiling.** When the link is *saturated* - losing packets while the round-trip
@@ -260,10 +263,11 @@ namespace meow::adaptive_bitrate {
   struct tuning_t {
     std::chrono::milliseconds window {1000};  ///< Length of one evaluation window.
 
-    double damaged_high = 0.15;  ///< Damaged-frame fraction at or above which the window is lossy.
-    double damaged_low = 0.02;  ///< Damaged-frame fraction at or below which the window is clean.
-    int loss_high_permille = 30;  ///< Reported pre-FEC loss at or above which the window is lossy.
-    int loss_low_permille = 5;  ///< Reported pre-FEC loss at or below which the window is clean.
+    double unrecovered_high = 0.02;  ///< Fraction of frames FEC could NOT rebuild at or above which the window is lossy.
+    double damaged_high = 0.15;  ///< Damaged-frame fraction that is lossy *when the RTT is also elevated*.
+    int loss_high_permille = 30;  ///< Reported pre-FEC loss that is lossy *when the RTT is also elevated*.
+    double loss_beyond_fec = 0.5;  ///< Pre-FEC loss above this share of the FEC percentage is lossy on its own.
+    double loss_clean_fec = 0.25;  ///< Pre-FEC loss at or below this share of the FEC percentage still counts as clean.
     int bad_windows_to_back_off = 2;  ///< Consecutive lossy windows required before backing off.
     double loss_back_off_factor = 0.75;  ///< Multiplicative decrease on loss.
 
@@ -502,6 +506,69 @@ namespace meow::adaptive_bitrate {
   [[nodiscard]] inline constexpr int automatic_floor(const int negotiated_kbps) {
     const auto share = static_cast<int>(static_cast<std::int64_t>(std::max(negotiated_kbps, 0)) * auto_floor_percent / 100);
     return std::max(auto_floor_kbps, share);
+  }
+
+  /**
+   * @brief The share of the client's bitrate budget Sunshine spends on things other than video.
+   *
+   * A client asks for a *total* bitrate. `rtsp.cpp` turns that into the encoder bitrate by
+   * making room for FEC parity, audio and packet overhead, so the client's numbers (`max_kbps`,
+   * the bitrate it negotiates) and the encoder's are different units. Both conversions below
+   * use exactly that formula, so a client that remembers an APPLIED rate and negotiates it next
+   * session gets the same encoder rate back instead of a lower one each time.
+   */
+  struct wire_budget_t {
+    int fec_percentage = 20;  ///< `fec_percentage` (parity shards per 100 data shards).
+    int audio_kbps = 192;  ///< Audio budget: 256 (high quality) or 96 kbps per channel.
+  };
+
+  /**
+   * @brief A client bitrate in the encoder's units: `rtsp.cpp`'s adjustment, verbatim.
+   *
+   * @param client_kbps Total bitrate as the client states it.
+   * @param budget FEC and audio budget of the session.
+   * @return The encoder bitrate `rtsp.cpp` would configure for it.
+   */
+  [[nodiscard]] inline int client_to_encoder_kbps(const int client_kbps, const wire_budget_t &budget) {
+    if (client_kbps <= 0) {
+      return 0;
+    }
+    std::int64_t kbps = client_kbps;
+    if (budget.fec_percentage <= 80) {
+      kbps /= 100.f / static_cast<float>(100 - budget.fec_percentage);
+    }
+    kbps -= std::min(static_cast<std::int64_t>(std::max(budget.audio_kbps, 0)), kbps / 5);
+    kbps -= std::min(static_cast<std::int64_t>(500), kbps / 10);
+    return static_cast<int>(std::clamp<std::int64_t>(kbps, 0, max_configurable_kbps));
+  }
+
+  /**
+   * @brief An encoder bitrate in the client's units: the smallest total bitrate `rtsp.cpp`
+   *        would turn into at least that encoder bitrate.
+   *
+   * @param encoder_kbps Encoder bitrate.
+   * @param budget FEC and audio budget of the session.
+   * @return The client-side total bitrate.
+   */
+  [[nodiscard]] inline int encoder_to_client_kbps(const int encoder_kbps, const wire_budget_t &budget) {
+    if (encoder_kbps <= 0) {
+      return 0;
+    }
+    // Invert the three steps analytically, then settle the rounding by search.
+    double y = encoder_kbps >= 4500 ? encoder_kbps + 500.0 : encoder_kbps * 10.0 / 9.0;
+    const double audio = std::max(budget.audio_kbps, 0);
+    double x = y >= 4 * audio ? y + audio : y * 5.0 / 4.0;
+    if (budget.fec_percentage <= 80) {
+      x = x * 100.0 / (100 - budget.fec_percentage);
+    }
+    auto client = static_cast<int>(std::min<double>(x, max_configurable_kbps * 2.0));
+    for (int i = 0; i < 64 && client_to_encoder_kbps(client, budget) < encoder_kbps; ++i) {
+      ++client;
+    }
+    for (int i = 0; i < 64 && client > 1 && client_to_encoder_kbps(client - 1, budget) >= encoder_kbps; ++i) {
+      --client;
+    }
+    return client;
   }
 
   /**
@@ -935,12 +1002,12 @@ namespace meow::adaptive_bitrate {
       // happened to mention: the client reports only damaged frames, so "lost / reported"
       // measures how bad the bad frames were and is inflated by roughly the frame rate.
       double damaged = 0.0;
+      double unrecovered = 0.0;
       if (window_frames_ > 0) {
         damaged = std::min(1.0, static_cast<double>(window_damaged_) / static_cast<double>(window_frames_));
+        unrecovered = std::min(1.0, static_cast<double>(window_unrecovered_) / static_cast<double>(window_frames_));
       }
       const int loss = window_report_ ? static_cast<int>(window_report_->loss_permille) : -1;
-      const bool lossy = damaged >= tuning_.damaged_high || loss >= tuning_.loss_high_permille;
-      const bool clean = damaged <= tuning_.damaged_low && window_unrecovered_ == 0 && loss <= tuning_.loss_low_permille;
       decision.observed_damaged = damaged;
       decision.observed_loss_permille = loss;
 
@@ -977,6 +1044,16 @@ namespace meow::adaptive_bitrate {
       } else {
         delay_windows_ = 0;
       }
+
+      // ---- classify ----------------------------------------------------------------------
+      // Loss that FEC repairs is what FEC is for. Random Wi-Fi or cellular loss of 0.5% damages
+      // ~16% of 35-packet frames and every one of them is still decoded, so backing off on it
+      // would ratchet an ordinary wireless link to the floor for nothing. Loss is only a reason
+      // to back off when it hurts: frames FEC could not rebuild, loss beyond what FEC can carry,
+      // or loss together with a rising round-trip time - the signature of a queue overflowing.
+      const double fec_permille = 10.0 * tuning_.fec_percentage;
+      const bool lossy = unrecovered >= tuning_.unrecovered_high || loss >= fec_permille * tuning_.loss_beyond_fec || (elevated && (damaged >= tuning_.damaged_high || loss >= tuning_.loss_high_permille));
+      const bool clean = window_unrecovered_ == 0 && !elevated && loss <= fec_permille * tuning_.loss_clean_fec;
 
       // A path change moves the RTT by a step and then sits still, without loss and without
       // the goodput falling. A queue keeps growing and ends in loss. After enough windows of

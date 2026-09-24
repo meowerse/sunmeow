@@ -46,6 +46,14 @@ namespace {
     meow::control::session_state_t meow;  ///< Meow per-session state.
 
     struct {
+      audio::config_t audio {};  ///< Stereo, normal quality: a 192 kbps audio budget.
+    } config;  ///< Stream configuration.
+
+    fake_session_t() {
+      config.audio.channels = 2;
+    }
+
+    struct {
       fake_peer_t *peer = nullptr;  ///< Control peer.
     } control;  ///< Control channel.
   };
@@ -122,6 +130,27 @@ TEST(MeowControlPayloads, LossStatsAndInvalidateRefFramesAreLengthChecked) {
   EXPECT_TRUE(meow::control::invalidate_ref_frames_payload_ok(std::string(24, '\0')));
 }
 
+TEST(MeowControlPayloads, InputDataCiphertextMustFitItsLengthPrefix) {
+  const auto with_length = [](const std::uint32_t length, const std::size_t total) {
+    std::string p(total, '\0');
+    if (total >= 4) {
+      p[0] = static_cast<char>(length >> 24);
+      p[1] = static_cast<char>(length >> 16);
+      p[2] = static_cast<char>(length >> 8);
+      p[3] = static_cast<char>(length);
+    }
+    return p;
+  };
+  for (std::size_t len = 0; len < 4; ++len) {
+    EXPECT_FALSE(meow::control::input_data_payload_ok(with_length(0, len))) << len;
+  }
+  EXPECT_TRUE(meow::control::input_data_payload_ok(with_length(0, 4)));
+  EXPECT_TRUE(meow::control::input_data_payload_ok(with_length(28, 32)));
+  EXPECT_FALSE(meow::control::input_data_payload_ok(with_length(29, 32))) << "one byte past the end";
+  EXPECT_FALSE(meow::control::input_data_payload_ok(with_length(0xFFFFFFFFu, 32))) << "negative as int32";
+  EXPECT_FALSE(meow::control::input_data_payload_ok(with_length(0x7FFFFFFFu, 32)));
+}
+
 TEST(MeowControlPayloads, EveryMeowMessageIsTiny) {
   // N2: far below the 1280-byte tailnet MTU.
   EXPECT_LE(meow::control::max_payload_length, 64u);
@@ -194,9 +223,17 @@ TEST_F(MeowControlStreamTest, ReportsReachTheEncoderAndArmTheAppliedChannel) {
   report[0] = 1;
   report[2] = static_cast<char>(0xE8);
   report[3] = 0x03;
+  report[20] = 0x20;  // max_kbps = 20000 (0x4E20), the user's total budget
+  report[21] = 0x4E;
   server.handlers.at(0x3005)(&session, report);
   ASSERT_TRUE(reports->peek());
-  EXPECT_EQ(reports->pop()->interval_ms, 1000);
+  const auto forwarded = reports->pop();
+  EXPECT_EQ(forwarded->interval_ms, 1000);
+  // In encoder units, exactly as rtsp.cpp converts a negotiated bitrate: 20000 * 0.8 - 192 - 500.
+  EXPECT_EQ(forwarded->max_kbps, static_cast<std::uint32_t>(meow::adaptive_bitrate::client_to_encoder_kbps(20000, {config::stream.fec_percentage, 192})));
+  if (config::stream.fec_percentage == 20) {
+    EXPECT_EQ(forwarded->max_kbps, 15308u);
+  }
   EXPECT_TRUE(session.meow.applied);
 
   server.handlers.at(0x3005)(&session, report.substr(0, 23));
@@ -265,7 +302,14 @@ TEST_F(MeowControlStreamTest, TickSendsAppliedBitrate) {
   ASSERT_FALSE(sent.empty());
   const auto &applied = sent.front();
   EXPECT_EQ(applied.type, 0x3005);
-  EXPECT_EQ(applied.payload, (std::vector<std::uint8_t> {0x01, 0x00, 0x00, 0x00, 0xA8, 0x61, 0x00, 0x00}));
+  ASSERT_EQ(applied.payload.size(), 8u);
+  EXPECT_EQ(applied.payload[0], 0x01);
+  // Reported in the client's units: the total bitrate it would negotiate to get 25000 kbps of
+  // video after rtsp.cpp deducts FEC (20%), audio (192) and overhead (500).
+  const auto client_kbps = static_cast<int>(applied.payload[4] | (applied.payload[5] << 8) | (applied.payload[6] << 16) | (applied.payload[7] << 24));
+  const meow::adaptive_bitrate::wire_budget_t budget {config::stream.fec_percentage, 192};
+  EXPECT_EQ(client_kbps, meow::adaptive_bitrate::encoder_to_client_kbps(25000, budget));
+  EXPECT_EQ(meow::adaptive_bitrate::client_to_encoder_kbps(client_kbps, budget), 25000);
 
   sent.clear();
   meow::control::on_session_tick(&session, recorder(), std::chrono::steady_clock::now());
@@ -347,6 +391,27 @@ TEST_F(MeowControlStreamTest, TickSamplesHostRttForTheController) {
   rtts->pop();
   meow::control::on_session_tick(&session, recorder(), now + 2s);
   EXPECT_FALSE(rtts->peek()) << "no sampling with the feature off";
+}
+
+TEST_F(MeowControlStreamTest, PollsQuicklyWhileAnEchoIsOwed) {
+  int scaler = 0;
+  meow::viewport::on_scaler_init(&scaler, 5360, 1440, 1280, 720);
+  meow::viewport::detail::control_sent_seq = meow::viewport::current_echo_seq();
+  EXPECT_EQ(meow::control::iterate_timeout(150ms), 150ms);
+
+  // A request arrives: the encode thread owes an echo; the loop must not sleep 150 ms on it.
+  ASSERT_TRUE(meow::viewport::apply_request(std::string("\x01\x00\x80\x02\xBC\x00\x80\x02\x57\x01", 10), true));
+  EXPECT_EQ(meow::control::iterate_timeout(150ms), meow::control::cursor_poll_interval);
+  static_cast<void>(meow::viewport::plan_for_frame(&scaler, 5360, 1440, 1280, 720));
+  meow::viewport::on_frame_encoded(1);
+  EXPECT_EQ(meow::control::iterate_timeout(150ms), meow::control::cursor_poll_interval) << "published, not yet sent";
+
+  fake_session_t session;
+  fake_peer_t peer;
+  session.control.peer = &peer;
+  session.meow.echo_seq = 0;
+  meow::control::on_session_tick(&session, recorder(), std::chrono::steady_clock::now());
+  EXPECT_EQ(meow::control::iterate_timeout(150ms), 150ms) << "sent: back to upstream's timeout";
 }
 
 TEST_F(MeowControlStreamTest, PollsAt60HzOnlyWhileSomeoneFollowsTheCursor) {

@@ -1570,9 +1570,11 @@ supported on the current platform.
             every Moonlight client sends, the round-trip time of the control connection, and - from Moonmeow - a
             once-a-second receiver report with goodput, packet loss, round-trip time and decoder load.
             <br><br>
-            It backs off when loss persists for two seconds (to 75%), and <em>before</em> loss when the round-trip time
-            keeps rising above its baseline (to 85%). When the link is saturated - losing packets with the round-trip
-            time up - it also caps the new bitrate at what actually arrived. When the link is clean it probes back up by
+            It backs off (to 75%) when loss hurts for two seconds - frames forward error correction could not rebuild,
+            loss beyond what FEC can carry, or loss while the round-trip time is up - and <em>before</em> any loss when
+            the round-trip time keeps rising above its baseline (to 85%). Random Wi-Fi or cellular loss that FEC repairs
+            is not a reason to back off. When the link is saturated - losing packets with the round-trip time up - it
+            also caps the new bitrate at what actually arrived. When the link is clean it probes back up by
             about 8% per second, at most 25% per change, staying just below the rate that last congested for 30 seconds.
             The round-trip baseline is a minimum over the last 20 seconds and moves to a new path after a sustained step
             with no loss, so a Tailscale switch between a direct and a relayed path never pins the stream low.

@@ -930,7 +930,8 @@ namespace kwin {
       if (screencast->init(true) < 0) {
         return -1;
       }
-      // MEOW-TOUCH(cursor): cursor as PipeWire metadata (drawn back in by the host) when decided so.
+      // MEOW-TOUCH(cursor): cursor as PipeWire metadata (drawn back in by the host) on a memory path.
+      meow_cursor_metadata = meow::cursor::metadata_mode_wanted(meow_cursor_memory_path);
       screencast->pointer_mode = meow_cursor_metadata ? ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_METADATA : ZKDE_SCREENCAST_UNSTABLE_V1_POINTER_EMBEDDED;
       BOOST_LOG(info) << "[kwingrab] Cursor: "sv << (meow_cursor_metadata ? "metadata (drawn by the host, position reported to clients)"sv : "embedded by the compositor"sv);
       if (screencast->start(display_name) < 0) {

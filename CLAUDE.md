@@ -304,8 +304,9 @@ cross-platform `src/audio.cpp`, not the Linux backend. Likewise
 
 Partial coverage added 2026-09-24, by extracting the logic rather than testing the glue:
 the metadata-cursor path in `pipewire.cpp`/`kwingrab.cpp` (SPA cursor parsing, the blend,
-restore, pointer-mode choice) is tested through `src/meow/cursor.h` and
-`src/meow/cursor_runtime.h` in `tests/unit/meow/test_cursor.cpp`, and the cropped upload in
+restore, pointer-mode choice, and the metadata-mode buffer handling driven with in-memory
+`spa_buffer`s) is tested through `src/meow/cursor*.h` in `tests/unit/meow/test_cursor.cpp` and
+`test_cursor_pipewire.cpp`, and the cropped upload in
 `cuda.cpp` through `meow::viewport::cuda_upload_rect()` in `test_viewport_cuda.cpp`. The
 PipeWire/Wayland/CUDA calls themselves remain untested without hardware; `tools/meow/*`
 holds the probes used to verify them on a real machine.
