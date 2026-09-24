@@ -61,7 +61,8 @@
           {{ $t('index.installed_version_not_stable') }}
         </div>
 
-        <div v-else-if="(!preReleaseBuildAvailable || !notifyPreReleases) && !stableBuildAvailable && !buildVersionIsDirty">
+        <!-- MEOW-TOUCH(web-identity): `githubVersion &&` -- never claim "latest" when the check did not run -->
+        <div v-else-if="githubVersion && (!preReleaseBuildAvailable || !notifyPreReleases) && !stableBuildAvailable && !buildVersionIsDirty">
           <div class="alert alert-success my-3">
             <check-circle :size="18" class="icon"></check-circle>
             {{ $t('index.version_latest') }}
@@ -122,6 +123,8 @@
   import Navbar from './Navbar.vue'
   import ResourceCard from './ResourceCard.vue'
   import SunshineVersion from './sunshine_version'
+  // MEOW-TOUCH(web-identity): check OUR releases, not LizardByte/Sunshine's. @see meow_release_check.js
+  import { fetchLatestRelease, fetchLatestPreRelease } from './meow_release_check'
   import {
     AlertCircle,
     AlertTriangle,
@@ -143,7 +146,7 @@
     sanitize: false
   });
 
-  console.log("Hello, Sunshine!")
+  console.log("Hello, Sunmeow!")  // MEOW-TOUCH(web-identity): was "Hello, Sunshine!"
   export default {
     components: {
       Navbar,
@@ -183,10 +186,14 @@
         this.gamepadDriver = config.gamepad_driver || '';
         this.version = new SunshineVersion(null, config.version);
         console.log("Version: ", this.version.version)
-        this.githubVersion = new SunshineVersion(await fetch("https://api.github.com/repos/LizardByte/Sunshine/releases/latest").then((r) => r.json()), null);
-        console.log("GitHub Version: ", this.githubVersion.version)
-        this.preReleaseVersion = new SunshineVersion((await fetch("https://api.github.com/repos/LizardByte/Sunshine/releases").then((r) => r.json())).find(release => release.prerelease), null);
-        console.log("Pre-Release Version: ", this.preReleaseVersion.version)
+        // MEOW-TOUCH(web-identity): both helpers return null when this fork has no published
+        // release, which the computed guards below already treat as "nothing to compare".
+        const latestRelease = await fetchLatestRelease();
+        this.githubVersion = latestRelease ? new SunshineVersion(latestRelease, null) : null;
+        console.log("Latest release: ", this.githubVersion ? this.githubVersion.version : "unavailable (see debug log)")
+        const preRelease = await fetchLatestPreRelease();
+        this.preReleaseVersion = preRelease ? new SunshineVersion(preRelease, null) : null;
+        console.log("Latest pre-release: ", this.preReleaseVersion ? this.preReleaseVersion.version : "unavailable (see debug log)")
 
         // The Virtual HID Driver also backs relative mouse input when controllers are disabled.
         if (this.platform === 'windows') {

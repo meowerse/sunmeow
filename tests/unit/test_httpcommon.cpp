@@ -49,7 +49,12 @@ struct DownloadFileTest: BaseTest, testing::WithParamInterface<std::tuple<std::s
 
 TEST_P(DownloadFileTest, Run) {
   const auto &[url, filename] = GetParam();
-  const std::string test_dir = platf::appdata().string() + "/tests/";
+  // MEOW-TOUCH(test-sandbox): write into the BUILD tree, not the user's live config dir.
+  // platf::appdata() is ~/.config/sunmeow on a real desktop, so this test littered the
+  // directory that holds apps.json, credentials and the paired-client list -- the one place
+  // a test must never touch. SUNSHINE_TEST_BIN_DIR is what tests/unit/test_nvhttp_client_auth.cpp
+  // already uses for the same reason.
+  const std::string test_dir = std::string {SUNSHINE_TEST_BIN_DIR} + "/tests/";
   std::string path = test_dir + filename;
   ASSERT_TRUE(http::download_file(url, path, CURL_SSLVERSION_TLSv1_0));
 }
