@@ -69,15 +69,52 @@ If you are coming from a pre-rebrand build of this fork, your state is still und
 `sunmeow_state.json` holds your **paired clients**. Losing it does not lose settings or apps,
 but every paired device has to re-pair with a PIN.
 
-> **Known defect, and the reason this backup is mandatory rather than prudent:** the repo's own
-> test binary writes into the real config directory. `tests/unit/test_http_pairing.cpp` drives
-> the genuine pairing code, which persists to `config::nvhttp.file_state`; `$HOME` does not
-> redirect it. Running `./build/tests/test_sunshine` therefore **overwrites
-> `sunmeow_state.json` with a fixture** (a single device literally named `test`) and creates a
-> stray `~/.config/sunmeow/tests/` directory. A running Sunshine keeps the real client list in
-> memory and will write it back when it next saves — so the damage is latent, not immediate, and
-> it only becomes real if the process restarts first. Check `docs/meow/TOUCHPOINTS.md` and the
-> repository's open branches for the sandbox fix before assuming this still applies.
+> **This section used to describe a cause that no longer exists — the leak class did not go away. Corrected 2026-09-03 by
+> measurement, not by reading the code.** It claimed the test binary overwrites
+> `sunmeow_state.json` with a fixture via `tests/unit/test_http_pairing.cpp`. That was true once.
+> It is not true now, and acting on it wastes time chasing phantom data loss.
+>
+> What was actually measured, by md5-summing the live file around each run:
+>
+> | Run | Effect on `~/.config/sunmeow/sunmeow_state.json` |
+> | --- | --- |
+> | `--gtest_filter='*PairingTest*'` | **unchanged** |
+> | Each hardware suite individually | **unchanged** |
+> | Whole suite minus `EncoderTest` (703 tests) | **unchanged** |
+>
+> Why it is fixed: upstream's 2026-09-02 security work added `nvhttp::test_support::reset_client_state()`,
+> and `PairingTest` now sets `FRESH_STATE` and resets in-memory state in `SetUp`/`TearDown`
+> (`tests/unit/test_http_pairing.cpp`), while the new `tests/unit/test_nvhttp_client_auth.cpp`
+> redirects `config::nvhttp.file_state` into the build tree and restores it afterwards.
+>
+> **Two real leaks did survive, and are fixed here.** `tests/unit/test_httpcommon.cpp` built its
+> download path from `platf::appdata()` — i.e. `~/.config/sunmeow` on a real desktop — and created
+> a stray `~/.config/sunmeow/tests/` directory on every run. It never touched
+> `sunmeow_state.json`, so no pairing was ever lost by it, but a test writing into the directory
+> that holds `apps.json`, `credentials` and the paired-client list is one edit away from doing
+> real damage. It now writes to `SUNSHINE_TEST_BIN_DIR`, the same build-tree location the auth
+> test already used. `tests/unit/test_file_handler.cpp` did the same through
+> `platf::appdata()/tests/path/` (its cleanup removed only `path/`) and now writes there too.
+>
+> **This is per-test hygiene, and it is not enough on its own.** The capture tests still resolve
+> the XDG portal restore token through `platf::appdata()`, so on a real desktop they read — and
+> can rewrite — `~/.config/sunmeow/portal_token`, and the live pairings were lost again on
+> 2026-09-14, after the measurement above. Do not rely on individual tests behaving: run the
+> suite against a throwaway config directory. `tests/meow/config_sandbox.cpp` builds that into
+> the test binary itself (it overrides `XDG_CONFIG_HOME`, and `HOME` on macOS, before anything
+> reads them); the `env` line below is a second, independent layer on top of it.
+>
+> ```bash
+> md5sum ~/.config/sunmeow/sunmeow_state.json
+> env -u CONFIGURATION_DIRECTORY -u SUNSHINE_MIGRATE_CONFIG \
+>   HOME=/var/tmp/sunmeow-testhome XDG_CONFIG_HOME=/var/tmp/sunmeow-testhome/.config \
+>   ./build/tests/test_sunshine --gtest_filter='-EncoderVariants/EncoderTest*'
+> md5sum ~/.config/sunmeow/sunmeow_state.json   # must be identical
+> ls ~/.config/sunmeow/tests 2>/dev/null && echo 'LEAK IS BACK'
+> ```
+>
+> Back up anyway before an upgrade. Not because the tests will eat it, but because §3 below
+> replaces a running binary and the state file is the only thing you cannot regenerate.
 
 ---
 
