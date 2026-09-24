@@ -359,16 +359,38 @@ namespace nvhttp {
     } catch (std::exception &e) {
       BOOST_LOG(error) << "Couldn't read "sv << config::nvhttp.file_state << ": "sv << e.what();
 
+      // MEOW-TOUCH(uniqueid): never leave the host without an identity. An empty id is served
+      // as `<uniqueid/>`, which Moonlight rejects, so the host could not even be added. The
+      // unreadable file is deliberately NOT rewritten: it may still hold pairings worth saving.
+      http::unique_id = uuid_util::uuid_t::generate().string();
       return;
     }
 
+    // MEOW-TOUCH(uniqueid): an EMPTY uniqueid must be treated exactly like a missing one.
+    // `get_optional` returns an engaged optional for `"uniqueid": ""`, so checking only for
+    // absence leaves `http::unique_id` empty forever -- it is never regenerated, and any later
+    // save_state() writes it back empty. Sunshine then advertises `<uniqueid/>` in
+    // /serverinfo, and Moonlight treats uniqueid as a mandatory field: its XML pull parser
+    // emits no TEXT event for an empty element, so the client throws "Missing mandatory field
+    // in host response: uniqueid" and the host can never be added or paired.
     auto unique_id_p = tree.get_optional<std::string>("root.uniqueid");
     if (!unique_id_p) {
       // This file doesn't contain moonlight credentials
       http::unique_id = uuid_util::uuid_t::generate().string();
       return;
     }
-    http::unique_id = std::move(*unique_id_p);
+
+    const bool recovered_unique_id = unique_id_p->empty();
+    if (recovered_unique_id) {
+      // Recover the host identity, then KEEP LOADING: the early return above is only correct
+      // when the key is absent (no credentials in the file at all). A file that carries an
+      // empty id may still carry a full `named_devices` list, and returning here would drop
+      // every paired client from memory -- which save_state() would then persist as empty,
+      // destroying the pairings this fix exists to protect.
+      http::unique_id = uuid_util::uuid_t::generate().string();
+    } else {
+      http::unique_id = std::move(*unique_id_p);
+    }
 
     auto root = tree.get_child("root");
     client_t client;
@@ -412,6 +434,13 @@ namespace nvhttp {
     std::lock_guard lock {client_auth_mutex};
     client_root = std::move(client);
     rebuild_client_cert_chain();
+
+    // MEOW-TOUCH(uniqueid): persist the recovered id now. save_state() otherwise runs only on
+    // pair/unpair/enable changes, so a host whose clients keep streaming would serve a NEW id
+    // after every restart -- and Moonlight drops a host whose poll returns a different id.
+    if (recovered_unique_id && !config::sunshine.flags[config::flag::FRESH_STATE]) {
+      save_state();
+    }
   }
 
   /**
