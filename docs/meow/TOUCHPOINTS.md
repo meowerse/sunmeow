@@ -228,10 +228,11 @@ part of adding a touch-point in a new directory, not a follow-up.**
 
 What matters in (2) is the **deletion** column. The rule is still *prefer zero* — we add to
 upstream files rather than cut them — but it is no longer literally zero everywhere, so treat
-any non-zero value as **a question to answer, not an automatic failure**. Five are known and
-justified above: `vite.config.js` (`8`, the codecov removal), `package.json` (`3`),
+any non-zero value as **a question to answer, not an automatic failure**. The large, deliberate ones are argued
+above — `vite.config.js` (`8`, the codecov removal), `package.json` (`3`),
 `package-lock.json` (`1251`, generated), `cuda.cu` (`11`, which must not grow) and
-`kwingrab.cpp` (`8`, in-place edits). A non-zero count on any *other* file, or a count larger
+`kwingrab.cpp` (`8`, in-place edits) — and every one-line in-place replacement is listed in the
+block below. A non-zero count on any *other* file, or a count larger
 than recorded here, means someone removed upstream content — investigate before syncing.
 Insertion counts change with every edit to our own docs, so do not treat those as fixed:
 
@@ -262,6 +263,7 @@ Insertion counts change with every edit to our own docs, so do not treat those a
 <n>	1	src/platform/macos/misc.mm                        # rebrand: config dir literal replaced
 <n>	1	tests/unit/test_httpcommon.cpp                    # test-sandbox: path line replaced
 <n>	1	tests/unit/test_file_handler.cpp                  # test-sandbox: path line replaced
+<n>	1	src/nvhttp.cpp                                    # uniqueid: replaced assignment
 1	27	sunshine.svg                                   # green-brand: GENERATED -- take upstream, re-run
 1	75	src_assets/common/assets/web/public/images/sunshine-locked.svg    # generated, as above
 1	84	src_assets/common/assets/web/public/images/sunshine-pausing.svg   # generated, as above

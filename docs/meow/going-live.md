@@ -69,7 +69,7 @@ If you are coming from a pre-rebrand build of this fork, your state is still und
 `sunmeow_state.json` holds your **paired clients**. Losing it does not lose settings or apps,
 but every paired device has to re-pair with a PIN.
 
-> **This section used to describe a defect that no longer exists. Corrected 2026-09-03 by
+> **This section used to describe a cause that no longer exists — the leak class did not go away. Corrected 2026-09-03 by
 > measurement, not by reading the code.** It claimed the test binary overwrites
 > `sunmeow_state.json` with a fixture via `tests/unit/test_http_pairing.cpp`. That was true once.
 > It is not true now, and acting on it wastes time chasing phantom data loss.
@@ -100,8 +100,9 @@ but every paired device has to re-pair with a PIN.
 > the XDG portal restore token through `platf::appdata()`, so on a real desktop they read — and
 > can rewrite — `~/.config/sunmeow/portal_token`, and the live pairings were lost again on
 > 2026-09-14, after the measurement above. Do not rely on individual tests behaving: run the
-> suite against a throwaway config directory, which is what the gate does and what
-> `tests/meow/config_sandbox.cpp` makes the test binary do by itself.
+> suite against a throwaway config directory. `tests/meow/config_sandbox.cpp` builds that into
+> the test binary itself (it overrides `XDG_CONFIG_HOME`, and `HOME` on macOS, before anything
+> reads them); the `env` line below is a second, independent layer on top of it.
 >
 > ```bash
 > md5sum ~/.config/sunmeow/sunmeow_state.json

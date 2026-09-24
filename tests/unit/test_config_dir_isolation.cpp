@@ -25,10 +25,14 @@ namespace fs = std::filesystem;
  * silently regress.
  */
 TEST(ConfigDirIsolation, AppdataIsNotTheUsersLiveConfigDirectory) {
-#if defined(_WIN32) || defined(__APPLE__)
-  GTEST_SKIP() << "appdata() does not honour XDG_CONFIG_HOME on this platform, so the sandbox does not apply";
+#if defined(_WIN32)
+  GTEST_SKIP() << "appdata() resolves from the executable's location on Windows, never the user profile";
 #endif
-  const char *home = std::getenv("HOME");
+  // The sandbox records the real HOME before it (on macOS) redirects HOME itself.
+  const char *home = std::getenv("SUNMEOW_TESTS_REAL_HOME");
+  if (home == nullptr) {
+    home = std::getenv("HOME");
+  }
   ASSERT_NE(home, nullptr);
 
   const auto appdata = fs::weakly_canonical(platf::appdata());
