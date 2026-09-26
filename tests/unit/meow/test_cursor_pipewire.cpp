@@ -10,6 +10,7 @@
 #include "../../tests_common.h"
 
 // standard includes
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -265,6 +266,67 @@ TEST_F(MeowCursorPipewireTest, NoFrameYetHandsOutNothing) {
   fake_img_t img;
   meow::cursor::pipewire::fill_memory_img(d, img);
   EXPECT_EQ(img.data, nullptr);
+}
+
+TEST_F(MeowCursorPipewireTest, ATrustedPipewirePtsBecomesTheCaptureTimestamp) {
+  built_buffer_t frame(0x10, false, 4, 5, true, 1000);
+  process(frame);
+  fake_img_t img;
+  meow::cursor::pipewire::fill_memory_img(d, img, true);
+  ASSERT_TRUE(img.frame_timestamp.has_value());
+  EXPECT_EQ(*img.frame_timestamp, std::chrono::steady_clock::time_point(std::chrono::nanoseconds(1000)))
+    << "upstream's pts passthrough applies to the metadata-mode path too";
+  EXPECT_EQ(img.pts, 1000u);
+}
+
+TEST_F(MeowCursorPipewireTest, AnUntrustedPipewirePtsIsNotTheCaptureTimestamp) {
+  built_buffer_t frame(0x10, false, 4, 5, true, 1000);
+  process(frame);
+  const auto before = std::chrono::steady_clock::now();
+  fake_img_t img;
+  meow::cursor::pipewire::fill_memory_img(d, img, false);
+  ASSERT_TRUE(img.frame_timestamp.has_value());
+  EXPECT_GE(*img.frame_timestamp, before) << "sampled at capture time, as upstream does off its whitelist";
+  EXPECT_EQ(img.pts, 1000u) << "the pts itself is still reported for the duplicate filter";
+}
+
+TEST_F(MeowCursorPipewireTest, ACursorRefreshIsStampedNowNotWithTheFramesPts) {
+  built_buffer_t frame(0x10, false, 4, 5, true, 1000);
+  process(frame);
+  fake_img_t first;
+  meow::cursor::pipewire::fill_memory_img(d, first, true);
+
+  built_buffer_t moved(0xEE, true, 9, 10, false, 1001);
+  process(moved);
+  const auto before = std::chrono::steady_clock::now();
+  fake_img_t second;
+  meow::cursor::pipewire::fill_memory_img(d, second, true);
+  EXPECT_FALSE(second.pts.has_value());
+  ASSERT_TRUE(second.frame_timestamp.has_value());
+  EXPECT_GE(*second.frame_timestamp, before) << "a refresh is a new image now; re-using the frame's pts would duplicate a timestamp";
+  EXPECT_NE(*second.frame_timestamp, *first.frame_timestamp);
+}
+
+TEST_F(MeowCursorPipewireTest, AZeroPtsIsNotAUsableTimestamp) {
+  built_buffer_t frame(0x10, false, 4, 5, true, 0);
+  process(frame);
+  const auto before = std::chrono::steady_clock::now();
+  fake_img_t img;
+  img.pts = 77;  // Stale value from an earlier use of this image; must not survive.
+  meow::cursor::pipewire::fill_memory_img(d, img, true);
+  EXPECT_FALSE(img.pts.has_value()) << "upstream's fill_img_metadata() drops a pts of 0 the same way";
+  ASSERT_TRUE(img.frame_timestamp.has_value());
+  EXPECT_GE(*img.frame_timestamp, before);
+  EXPECT_EQ(img.seq, 0u) << "seq is kept as reported";
+}
+
+TEST(MeowCursorPipewireTimestamp, MirrorsUpstreamsChoice) {
+  const auto now = std::chrono::steady_clock::time_point(std::chrono::seconds(5));
+  const auto pts = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(4'000'000'000));
+  EXPECT_EQ(meow::cursor::pipewire::frame_timestamp(4'000'000'000u, true, now), pts);
+  EXPECT_EQ(meow::cursor::pipewire::frame_timestamp(4'000'000'000u, false, now), now);
+  EXPECT_EQ(meow::cursor::pipewire::frame_timestamp(std::nullopt, true, now), now);
+  EXPECT_EQ(meow::cursor::pipewire::frame_timestamp(std::nullopt, false, now), now);
 }
 
 TEST(MeowCursorPipewireFormat, RefusesWhatTheBlendCannotWriteAndStopsAsking) {

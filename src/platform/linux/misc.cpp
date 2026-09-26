@@ -1494,7 +1494,7 @@ namespace platf {
     }
 
     // MEOW-TOUCH(unified-desktop-capture): whole-desktop capture only exists in the kwin
-    // backend, and kwin is not auto-selected once portal has claimed a source above.
+    // backend; any other source selected above (including a portal fallback) cannot provide it.
 #ifdef SUNSHINE_BUILD_KWIN
     const bool kwin_selected = sources[source::KWIN];
 #else

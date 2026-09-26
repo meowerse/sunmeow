@@ -668,7 +668,7 @@ namespace pipewire {
       }
 
       if (stream_data.meow_cursor.enabled) {  // MEOW-TOUCH(cursor): memory frames with the cursor drawn in
-        meow::cursor::pipewire::fill_memory_img(stream_data, *static_cast<img_descriptor_t *>(img));
+        meow::cursor::pipewire::fill_memory_img(stream_data, *static_cast<img_descriptor_t *>(img), prefer_pipewire_pts);
         pw_thread_loop_unlock(loop);
         return;
       }

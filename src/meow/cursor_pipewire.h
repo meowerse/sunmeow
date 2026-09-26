@@ -25,6 +25,7 @@
 #pragma once
 
 // standard includes
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -253,7 +254,11 @@ namespace meow::cursor::pipewire {
       }
       std::memcpy(d->back_buffer->data(), data.data, size);
       if (const auto *h = static_cast<const spa_meta_header *>(spa_buffer_find_meta_data(buffer, SPA_META_Header, sizeof(spa_meta_header)))) {
-        frame_meta.pts = h->pts;
+        // Same rule as upstream's fill_img_metadata(): a pts of 0 (or less) is not a usable
+        // timestamp, so the frame carries none rather than a stale or bogus one.
+        if (h->pts > 0) {
+          frame_meta.pts = static_cast<std::uint64_t>(h->pts);
+        }
         frame_meta.seq = h->seq;
       }
       const auto *damage = static_cast<const spa_meta_region *>(spa_buffer_find_meta_data(buffer, SPA_META_VideoDamage, sizeof(spa_meta_region)));
@@ -288,6 +293,27 @@ namespace meow::cursor::pipewire {
   }
 
   /**
+   * @brief The capture timestamp of a handed-out frame, chosen exactly as upstream's
+   *        `fill_img_metadata()` chooses it for the paths this file replaces.
+   *
+   * PipeWire's pts is `CLOCK_MONOTONIC` nanoseconds, the clock `std::chrono::steady_clock`
+   * reads on Linux, so a trusted pts converts directly. Whether it is trusted is upstream's
+   * compositor whitelist (`pipewire_t::prefer_pipewire_pts`); a frame without a usable pts —
+   * including a cursor-only refresh, whose image is new *now* — is stamped with `now`.
+   *
+   * @param pts The frame's PipeWire pts, if it carried a usable one.
+   * @param prefer_pipewire_pts Whether upstream trusts PipeWire pts for this session.
+   * @param now The current time.
+   * @return The timestamp to hand to the encoder.
+   */
+  [[nodiscard]] inline std::chrono::steady_clock::time_point frame_timestamp(const std::optional<std::uint64_t> &pts, const bool prefer_pipewire_pts, const std::chrono::steady_clock::time_point now) noexcept {
+    if (pts.has_value() && prefer_pipewire_pts) {
+      return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(*pts));
+    }
+    return now;
+  }
+
+  /**
    * @brief The metadata-mode memory path of `fill_img()`: hand out the front buffer with the
    *        cursor drawn in.
    *
@@ -299,9 +325,10 @@ namespace meow::cursor::pipewire {
    * @tparam StreamData `pipewire::stream_data_t`.
    * @param d Stream data.
    * @param img Image to fill.
+   * @param prefer_pipewire_pts Upstream's `pipewire_t::prefer_pipewire_pts` for this session.
    */
   template<class Image, class StreamData>
-  void fill_memory_img(StreamData &d, Image &img) {
+  void fill_memory_img(StreamData &d, Image &img, const bool prefer_pipewire_pts = false) {
     auto &stream = d.meow_cursor;
     if (!stream.have_frame || d.front_buffer->empty()) {
       img.data = nullptr;
@@ -318,7 +345,6 @@ namespace meow::cursor::pipewire {
       stream.front_has_cursor = blend(frame, img.width, img.height, stride, stream.frame_format, stream.image, stream.x, stream.y, &stream.save);
     }
 
-    img.frame_timestamp = std::chrono::steady_clock::now();
     img.data = frame;
     img.data_owned = false;
     img.row_pitch = stride;
@@ -327,6 +353,7 @@ namespace meow::cursor::pipewire {
     // again. A cursor-only refresh has no header of its own, so it carries none, which keeps
     // the duplicate filter from discarding it.
     img.pts = stream.refreshes ? std::nullopt : stream.front_meta.pts;
+    img.frame_timestamp = frame_timestamp(img.pts, prefer_pipewire_pts, std::chrono::steady_clock::now());
     img.seq = stream.front_meta.seq;
     img.pw_flags = 0;
     img.pw_damage = stream.front_meta.damaged ? std::optional<bool>(true) : std::nullopt;
