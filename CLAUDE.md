@@ -210,7 +210,21 @@ git ls-tree HEAD third-party/moonlight-common-c
 Beware: a submodule's checked-out `origin` may be a leftover from an older base even when
 `.gitmodules` is correct. Trust `.gitmodules` at `HEAD`, not the remote in the working copy.
 
-#### Verified good state — 2026-09-24, synced to Sunshine `c48e50e4`
+#### Verified good state — 2026-09-26, synced to Sunshine `e1e6700b`
+
+Nine upstream commits on top of the 2026-09-24 state below. The protocol core did not move:
+`third-party/moonlight-common-c` is still pinned `62e06638`, which is still `HEAD` on
+`moonlight-stream/moonlight-common-c` as of 2026-09-26 (`git ls-remote`). Upstream bumped two
+submodules, both verified equal to their originating project's `HEAD` on 2026-09-26:
+`third-party/dockle` `c1bca82` -> `ce11c38` (`LizardByte/dockle`) and
+`third-party/plasma-wayland-protocols` `382dfab` -> `c5ac4db` (`KDE/plasma-wayland-protocols`,
+same SHA on `invent.kde.org`). Of the three `LizardByte-infrastructure/*` mirrors,
+`wlr-protocols` (`bf4fc79`) equals freedesktop `HEAD` and `Simple-Web-Server` (`546895a`)
+equals `gitlab.com/eidheim` `HEAD`, but **`wayland-protocols` (`ee78491`) is behind
+freedesktop `HEAD` (`819004ad`)** — upstream's pin, unchanged by this sync, recorded as drift
+rather than re-pinned by us.
+
+#### Previous verified state — 2026-09-24, synced to Sunshine `c48e50e4`
 
 Of the 16 submodules, **13 point at the originating project and 3 point at LizardByte's own
 mirror org** (see caveats below). The protocol core is exactly at upstream HEAD:
