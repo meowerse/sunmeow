@@ -320,6 +320,45 @@ TEST_F(MeowCursorPipewireTest, AZeroPtsIsNotAUsableTimestamp) {
   EXPECT_EQ(img.seq, 0u) << "seq is kept as reported";
 }
 
+TEST_F(MeowCursorPipewireTest, AFrameAfterARefreshIsNeverStampedEarlierThanTheRefresh) {
+  built_buffer_t frame(0x10, false, 4, 5, true, 1000);
+  process(frame);
+  fake_img_t img;
+  meow::cursor::pipewire::fill_memory_img(d, img, true);
+
+  built_buffer_t moved(0xEE, true, 9, 10, false, 1001);
+  process(moved);
+  fake_img_t refreshed;
+  meow::cursor::pipewire::fill_memory_img(d, refreshed, true);
+
+  // Composed before the refresh was handed out: its compositor pts is earlier than now().
+  built_buffer_t next(0x20, false, 9, 10, false, 1002);
+  process(next);
+  fake_img_t after;
+  meow::cursor::pipewire::fill_memory_img(d, after, true);
+  EXPECT_EQ(after.pts, 1002u) << "the frame still reports its own pts";
+  ASSERT_TRUE(after.frame_timestamp.has_value());
+  EXPECT_EQ(*after.frame_timestamp, *refreshed.frame_timestamp) << "held at the refresh's stamp instead of going backwards";
+}
+
+TEST_F(MeowCursorPipewireTest, AFrameArrivingBeforeAPendingRefreshIsHandedOutKeepsItsPts) {
+  built_buffer_t frame(0x10, false, 4, 5, true, 1000);
+  process(frame);
+  fake_img_t img;
+  meow::cursor::pipewire::fill_memory_img(d, img, true);
+
+  built_buffer_t moved(0xEE, true, 9, 10, false, 1001);
+  process(moved);
+  built_buffer_t next(0x20, false, 9, 10, false, 5000);
+  process(next);  // before the capture thread picked the refresh up
+
+  meow::cursor::pipewire::fill_memory_img(d, img, true);
+  EXPECT_EQ(img.pts, 5000u) << "the new frame supersedes the refresh";
+  ASSERT_TRUE(img.frame_timestamp.has_value());
+  EXPECT_EQ(*img.frame_timestamp, std::chrono::steady_clock::time_point(std::chrono::nanoseconds(5000)));
+  EXPECT_EQ(blue(img, 9, 10), 0xFF) << "with the cursor at its latest position";
+}
+
 TEST(MeowCursorPipewireTimestamp, MirrorsUpstreamsChoice) {
   const auto now = std::chrono::steady_clock::time_point(std::chrono::seconds(5));
   const auto pts = std::chrono::steady_clock::time_point(std::chrono::nanoseconds(4'000'000'000));

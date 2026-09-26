@@ -25,6 +25,7 @@
 #pragma once
 
 // standard includes
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -148,6 +149,7 @@ namespace meow::cursor::pipewire {
     bool have_frame = false;  ///< Whether a data frame has been copied yet.
     frame_meta_t front_meta;  ///< Metadata of the frame in the front buffer.
     std::uint64_t refreshes = 0;  ///< Cursor-only updates, counted so each yields a distinct image.
+    std::chrono::steady_clock::time_point refresh_stamp {};  ///< Timestamp of the last cursor-only refresh handed out; no later frame is stamped earlier.
   };
 
   /**
@@ -274,6 +276,7 @@ namespace meow::cursor::pipewire {
         std::swap(d->front_buffer, d->back_buffer);
         d->local_stride = data.chunk->stride;
         stream.front_meta = frame_meta;
+        stream.refreshes = 0;  // The fresh frame supersedes any refresh not handed out yet, and keeps its own pts.
         stream.front_has_cursor = false;  // A fresh frame from the compositor has no cursor in it.
         stream.have_frame = true;
         wake = true;
@@ -352,8 +355,16 @@ namespace meow::cursor::pipewire {
     // Metadata recorded when the frame was copied, never read from a buffer PipeWire owns
     // again. A cursor-only refresh has no header of its own, so it carries none, which keeps
     // the duplicate filter from discarding it.
-    img.pts = stream.refreshes ? std::nullopt : stream.front_meta.pts;
-    img.frame_timestamp = frame_timestamp(img.pts, prefer_pipewire_pts, std::chrono::steady_clock::now());
+    const bool refresh = stream.refreshes != 0;
+    img.pts = refresh ? std::nullopt : stream.front_meta.pts;
+    // A refresh is stamped now(), while a frame composed before that refresh was handed out
+    // can carry an earlier compositor pts. Never let the stream's timestamps go backwards:
+    // the RTP timestamp is derived from them and the client paces by it.
+    const auto stamp = std::max(frame_timestamp(img.pts, prefer_pipewire_pts, std::chrono::steady_clock::now()), stream.refresh_stamp);
+    if (refresh) {
+      stream.refresh_stamp = stamp;
+    }
+    img.frame_timestamp = stamp;
     img.seq = stream.front_meta.seq;
     img.pw_flags = 0;
     img.pw_damage = stream.front_meta.damaged ? std::optional<bool>(true) : std::nullopt;
