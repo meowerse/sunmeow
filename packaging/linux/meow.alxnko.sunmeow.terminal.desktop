@@ -1,6 +1,11 @@
 [Desktop Entry]
 Name=@PROJECT_NAME@
 Exec=sunmeow
+# MEOW-TOUCH(kwin-terminal-permission): KWin grants zkde_screencast_unstable_v1 by looking up a
+# desktop file for the client's executable. This file launches the same binary as the .kwin
+# permission file, so when KDE's service cache resolves the binary to this entry instead,
+# screen capture is refused until the host restarts. Both entries must carry the permission.
+X-KDE-Wayland-Interfaces=zkde_screencast_unstable_v1
 Terminal=true
 Type=Application
 NoDisplay=true
