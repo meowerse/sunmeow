@@ -400,7 +400,8 @@ namespace kwin {
       }
 
       if (!is_kwin_screencasting_available()) {
-        BOOST_LOG(debug) << "[kwingrab] zkde_screencast_unstable_v1 not found in registry."sv;
+        // MEOW-TOUCH(kwin-terminal-permission): a refused KWin permission must be visible, not debug-only.
+        BOOST_LOG(warning) << "[kwingrab] zkde_screencast_unstable_v1 not found in registry (KWin refused screencast permission; check the X-KDE-Wayland-Interfaces desktop files)."sv;
         return -1;
       }
 
